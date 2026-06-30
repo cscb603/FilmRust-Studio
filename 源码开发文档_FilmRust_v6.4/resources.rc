@@ -1,0 +1,33 @@
+#include <windows.h>
+#pragma code_page(65001)
+
+1 ICON "guitubiao.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 4,0,0,0
+PRODUCTVERSION 4,0,0,0
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "CompanyName", "星TAP 软件"
+            VALUE "FileDescription", "FilmRust Studio - 物理级胶片模拟工具"
+            VALUE "FileVersion", "4.0.0"
+            VALUE "InternalName", "filmrust-gui"
+            VALUE "LegalCopyright", "Copyright (C) 2026 星TAP 软件 (csb603@qq.com)"
+            VALUE "OriginalFilename", "filmrust-gui.exe"
+            VALUE "ProductName", "FilmRust Studio"
+            VALUE "ProductVersion", "4.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 0x04b0
+    END
+END

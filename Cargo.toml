@@ -1,0 +1,52 @@
+[package]
+name = "filmrust-studio"
+version = "7.3.0"
+edition = "2021"
+description = "物理级胶片模拟工具 - FilmRust Studio (Win10 + Mac)"
+authors = ["Geek Assistant"]
+
+[lib]
+name = "filmrust"
+path = "src/lib.rs"
+
+[[bin]]
+name = "filmrust"
+path = "src/main.rs"
+
+[[bin]]
+name = "filmrust-gui"
+path = "src/bin/filmrust_gui.rs"
+
+[[bin]]
+name = "filmrust-gui-pro"
+path = "src/bin/filmrust_gui_pro.rs"
+
+[dependencies]
+filmr = "0.13"
+clap = { version = "4.5", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "bmp"] }
+anyhow = "1.0"
+thiserror = "2.0"
+dirs = "5.0"
+num_cpus = "1.16"
+log = "0.4"
+env_logger = "0.11"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+egui = "0.34"
+eframe = { version = "0.34", default-features = false, features = ["default"] }
+rfd = "0.17"
+img-parts = "0.4"
+
+[dev-dependencies]
+tempfile = "3.10"
+
+[build-dependencies]
+embed-resource = "2.5"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

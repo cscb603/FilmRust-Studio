@@ -1,0 +1,347 @@
+╔══════════════════════════════════════════════════════════════════╗
+║ FilmRust Studio Pro v7.3  —  macOS 适配代码                      ║
+║ 星TAP 软件 2026  csb603@qq.com                                  ║
+╚══════════════════════════════════════════════════════════════════╝
+
+
+一、项目概览
+
+  本项目使用 Rust + egui 0.34，天生跨平台。
+  egui 底层基于 wgpu (Vulkan/Metal/DX12)，
+  Windows 用 DX12，macOS 会走 Metal 后端。
+
+  v7.3 已包含 macOS 基础适配代码 (platform.rs)，
+  以下是在 Mac 上完整编译运行需要的具体改动。
+
+
+二、macOS 编译步骤
+
+  【前提条件】
+
+  1. 安装 Xcode Command Line Tools:
+     xcode-select --install
+
+  2. 安装 Rust（如果还没有）:
+     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+  3. 确认工具链:
+     rustup default stable
+     rustc --version  (需 >= 1.85)
+
+
+  【编译方法 A — 直接编译（推荐）】
+
+  cd filmrust-studio
+
+  编译 CLI:
+  cargo build --release --bin filmrust
+
+  编译 GUI:
+  cargo build --release --bin filmrust-gui-pro
+
+  输出位置:
+  target/release/filmrust
+  target/release/filmrust-gui-pro
+
+
+  【编译方法 B — 编译为通用二进制 (Universal Binary)】
+
+  同时支持 Intel Mac 和 Apple Silicon:
+
+  rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+  cargo build --release --target aarch64-apple-darwin --bin filmrust-gui-pro
+  cargo build --release --target x86_64-apple-darwin --bin filmrust-gui-pro
+
+  lipo -create \
+    target/x86_64-apple-darwin/release/filmrust-gui-pro \
+    target/aarch64-apple-darwin/release/filmrust-gui-pro \
+    -output target/release/filmrust-gui-pro-universal
+
+
+三、需要修改的代码（v7.3 已部分适配）
+
+  【1. 中文字体路径 — src/bin/filmrust_gui_pro.rs】
+
+    当前 setup_chinese_fonts() 函数硬编码了 Windows 字体路径:
+      r"C:\Windows\Fonts\msyh.ttc"
+
+    v7.3 需要修改为跨平台探测:
+
+    ──── 修改位置: setup_chinese_fonts() 函数 ────
+
+    fn setup_chinese_fonts(&mut self, ctx: &egui::Context) {
+        let mut fonts = egui::FontDefinitions::default();
+
+        // 按优先级排列的候选字体路径
+        let candidates: Vec<std::path::PathBuf> = if cfg!(target_os = "macos") {
+            vec![
+                "/System/Library/Fonts/PingFang.ttc".into(),
+                "/System/Library/Fonts/Hiragino Sans GB.ttc".into(),
+                "/Library/Fonts/Arial Unicode.ttf".into(),
+                "/System/Library/Fonts/STHeiti Light.ttc".into(),
+            ]
+        } else {
+            vec![
+                r"C:\Windows\Fonts\msyh.ttc".into(),
+                r"C:\Windows\Fonts\msyhbd.ttc".into(),
+                r"C:\Windows\Fonts\simhei.ttf".into(),
+                r"C:\Windows\Fonts\simsun.ttc".into(),
+            ]
+        };
+
+        for path in &candidates {
+            if path.exists() {
+                if let Ok(font_data) = std::fs::read(path) {
+                    fonts.font_data.insert(
+                        "chinese".to_owned(),
+                        egui::FontData::from_owned(font_data),
+                    );
+                    fonts.families
+                        .entry(egui::FontFamily::Proportional)
+                        .or_default()
+                        .insert(0, "chinese".to_owned());
+                    fonts.families
+                        .entry(egui::FontFamily::Monospace)
+                        .or_default()
+                        .insert(0, "chinese".to_owned());
+                    ctx.set_fonts(fonts);
+                    return;
+                }
+            }
+        }
+        // 如果都没找到，使用默认字体（中文可能显示方块）
+        ctx.set_fonts(fonts);
+    }
+
+
+  【2. 文件对话框 — 已跨平台】
+
+    v7.3 使用 rfd = "0.17"，该库在 macOS 上自动使用
+    原生 NSOpenPanel/NSSavePanel，无需额外修改。
+
+
+  【3. 导出后打开文件夹 — 已适配】
+
+    v7.3 的 open_folder_and_select() 已包含 macOS 适配:
+
+    #[cfg(not(target_os = "windows"))]
+    fn open_folder_and_select(file_path: &Path) {
+        #[cfg(target_os = "macos")]
+        {
+            use std::process::Command;
+            // macOS: open -R 在 Finder 中定位文件
+            let _ = Command::new("open")
+                .args(["-R", &file_path.to_string_lossy()])
+                .spawn();
+        }
+    }
+
+
+  【4. 构建脚本 — build.rs (无需修改)】
+
+    当前 build.rs 已用 cfg 判断:
+      - Windows: 嵌入 .ico 资源 (resources.rc)
+      - macOS: 跳过 .rc，无需额外处理
+
+    如需 .app 图标，见下方 .app 打包章节。
+
+
+  【5. PS JSX 脚本路径适配】
+
+    macOS 的 Photoshop 同样支持 JSX/ExtendScript。
+    主要区别:
+    - 路径分隔符是 "/" 不是 "\\"
+    - TEMP_DIR 改为 "/tmp/filmrust_temp"
+    - EXE_PATH 指向 macOS 版 filmrust 二进制
+
+    在 JSX 脚本中添加平台检测:
+    ──── 修改位置: 各 .jsx 脚本头部 ────
+
+    var isMac = $.os.indexOf("Mac") > -1;
+    var SEP = isMac ? "/" : "\\";
+    var TEMP_DIR = isMac ? "/tmp/filmrust_temp" : "C:\\Temp\\filmrust_temp";
+    var EXE_NAME = isMac ? "filmrust" : "filmrust.exe";
+
+    // 获取脚本所在目录
+    var scriptDir = new File($.fileName).parent.fsName;
+    var exePath = scriptDir + SEP + EXE_NAME;
+
+
+  【6. platform.rs — 已适配】
+
+    v7.3 的 platform.rs 已包含 macOS 检测:
+    - Platform::MacOS 枚举值
+    - detect_ps_macos() 检测 /Applications 目录
+    - home_dir() / temp_dir() 跨平台支持
+
+
+四、.app 捆绑打包 (macOS 发布必需)
+
+  macOS 上 GUI 程序需要打包为 .app 目录结构:
+
+  FilmRust Studio.app/
+  └── Contents/
+      ├── Info.plist
+      ├── MacOS/
+      │   └── filmrust-gui-pro    (编译好的二进制)
+      └── Resources/
+          └── guitubiao.icns      (macOS 图标格式)
+
+
+  【Info.plist 模板】
+
+  <?xml version="1.0" encoding="UTF-8"?>
+  <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+  <plist version="1.0">
+  <dict>
+      <key>CFBundleExecutable</key>
+      <string>filmrust-gui-pro</string>
+      <key>CFBundleIdentifier</key>
+      <string>com.startap.filmrust-studio</string>
+      <key>CFBundleName</key>
+      <string>FilmRust Studio</string>
+      <key>CFBundleVersion</key>
+      <string>7.3.0</string>
+      <key>CFBundleShortVersionString</key>
+      <string>7.3.0</string>
+      <key>CFBundleIconFile</key>
+      <string>guitubiao</string>
+      <key>NSHighResolutionCapable</key>
+      <true/>
+      <key>CFBundleDocumentTypes</key>
+      <array>
+          <dict>
+              <key>CFBundleTypeName</key>
+              <string>Image</string>
+              <key>CFBundleTypeRole</key>
+              <string>Editor</string>
+              <key>LSItemContentTypes</key>
+              <array>
+                  <string>public.image</string>
+              </array>
+          </dict>
+      </array>
+  </dict>
+  </plist>
+
+
+  【图标格式转换】
+
+  brew install libicns
+  png2icns guitubiao.icns guitubiao.png
+
+
+  【打包脚本 — package_mac.sh】
+
+  #!/bin/bash
+  set -e
+
+  APP_NAME="FilmRust Studio"
+  BUNDLE_DIR="$APP_NAME.app"
+  BINARY="target/release/filmrust-gui-pro"
+
+  # 编译
+  cargo build --release --bin filmrust-gui-pro
+
+  # 创建 .app 结构
+  rm -rf "$BUNDLE_DIR"
+  mkdir -p "$BUNDLE_DIR/Contents/MacOS"
+  mkdir -p "$BUNDLE_DIR/Contents/Resources"
+
+  # 复制文件
+  cp "$BINARY" "$BUNDLE_DIR/Contents/MacOS/"
+  cp Info.plist "$BUNDLE_DIR/Contents/"
+  cp guitubiao.icns "$BUNDLE_DIR/Contents/Resources/"
+
+  # 设置执行权限
+  chmod +x "$BUNDLE_DIR/Contents/MacOS/filmrust-gui-pro"
+
+  # 签名 (自签名，用于分发)
+  codesign --force --deep --sign - "$BUNDLE_DIR"
+
+  echo "✅ 打包完成: $BUNDLE_DIR"
+
+
+  【创建 DMG 安装包】
+
+  brew install create-dmg
+
+  create-dmg \
+    --volname "FilmRust Studio" \
+    --volicon "guitubiao.icns" \
+    --icon "FilmRust Studio.app" 180 180 \
+    --window-size 600 400 \
+    FilmRust_Studio_v7.3_macOS.dmg \
+    "FilmRust Studio.app"
+
+
+五、已知差异对照表
+
+  项目             Windows                          macOS
+  ─────────────────────────────────────────────────────────────
+  GUI 框架         egui 0.34 (wgpu/DX12)           egui 0.34 (wgpu/Metal)
+  .exe 图标        resources.rc + .ico 嵌入         .app/Info.plist + .icns
+  字体             微软雅黑/黑体/宋体               苹方/PingFang
+  文件对话框       rfd (原生 Windows API)           rfd (原生 macOS API)
+  导出定位         explorer /select,                open -R
+  dcraw            命令行工具                       brew install dcraw
+  终端窗口         start /min 最小化                不需要，原生无终端
+  PS 脚本路径      反斜杠 "\\"                      正斜杠 "/"
+  签名             不需要                           codesign (Gatekeeper)
+  分发格式         .exe / .zip                      .app / .dmg
+
+
+六、macOS 测试清单
+
+  [ ] cargo build --release --bin filmrust           编译成功
+  [ ] cargo build --release --bin filmrust-gui-pro   编译成功
+  [ ] filmrust --list-styles                         显示 57 种风格
+  [ ] filmrust --input test.jpg --style xxx          处理成功
+  [ ] filmrust-gui-pro 双击启动                      窗口正常显示
+  [ ] 中文正常显示                                   苹方字体探测成功
+  [ ] 拖拽图片到窗口                                 加载正常
+  [ ] [开始显影]按钮                                 处理成功
+  [ ] [导出]按钮                                     保存成功
+  [ ] 导出后 Finder 定位文件                         open -R 正常
+  [ ] 批量处理                                       全部成功
+  [ ] .app 打包                                      双击启动正常
+  [ ] Gatekeeper                                     首次启动提示后能打开
+
+
+七、发布注意事项
+
+  1. macOS 编译产物是 Mach-O 二进制，不是 PE
+  2. 分发给用户前需要用 codesign 签名:
+     codesign --force --deep --sign - "FilmRust Studio.app"
+  3. 如果不上架 App Store，自签名即可
+  4. 首次启动可能被 Gatekeeper 拦截，用户需要在
+     系统偏好设置 → 安全性与隐私 → 仍然打开
+  5. 建议用 create-dmg 打包为 .dmg 分发
+  6. RAW 支持: macOS 用户可 brew install dcraw
+  7. Apple Silicon (M1/M2/M3) 建议编译 Universal Binary
+  8. Metal 后端要求 macOS 10.15+ (Catalina)
+
+
+八、常见问题
+
+  Q: 编译报错 "linker 'cc' not found"
+  A: 需要安装 Xcode Command Line Tools:
+     xcode-select --install
+
+  Q: 中文显示为方块
+  A: 字体路径不对，检查 PingFang.ttc 是否存在:
+     ls /System/Library/Fonts/PingFang.ttc
+
+  Q: 启动后窗口空白
+  A: Metal 后端问题，尝试:
+     WGPU_BACKEND=metal ./filmrust-gui-pro
+
+  Q: 导出后 Finder 没有弹出
+  A: 检查 open 命令是否可用:
+     which open
+
+  Q: .app 双击无反应
+  A: 检查执行权限:
+     chmod +x "FilmRust Studio.app/Contents/MacOS/filmrust-gui-pro"
