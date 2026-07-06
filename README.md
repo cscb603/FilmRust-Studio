@@ -1,6 +1,6 @@
 # 星TAP 胶片调色 | FilmRust Studio
 
-![FilmRust Studio](assets/icon.png)
+![FilmRust Studio 界面](dist/win-x64/7.3.4界面图.png)
 
 **物理级胶片模拟工具 — 不是调色，是"重新冲洗"**
 
@@ -21,7 +21,7 @@
 **使用步骤：**
 1. 打开软件 → 拖入照片
 2. 选一种胶片风格（57 种慢慢试）
-3. 7 个核心调节层微调曝光、色调、肤色
+3. 10 种调节层微调色彩、曲线、肤色、色调分离
 4. 导出 → 搞定
 
 不需要学任何东西。拖动鼠标，就能出片。
@@ -34,24 +34,30 @@
 
 | 模块 | 技术 |
 |------|------|
-| 前端 GUI | egui (Rust 原生 UI 框架) |
-| 物理引擎 | 自研 filmr 核心库（Rust） |
-| 图层管线 | 7 层 F32 精度合成管线 |
-| 图像处理 | image-rs + 自研算法 |
+| 前端 GUI | egui 0.34 (Rust 原生 UI 框架) |
+| 物理引擎 | filmr 0.13 核心库（Rust） |
+| 图层管线 | 10 层 F32 精度合成管线 |
+| 图像处理 | image-rs 0.25 + 自研算法 |
 | 导出 | JPEG/PNG（保留 EXIF） |
 | 二进制大小 | GUI 版 ~17MB，CLI 版 ~2MB |
+| 编译 | Rust 2021 edition, LTO 全量优化 |
 
-### 核心特性
+### v7.3.4 更新内容
 
-- **物理级胶片模拟**：57 种真实胶卷光谱数据（Kodak、Fuji、Ilford 等），三层乳剂反应级模拟
-- **7 层 F32 精度管线**：胶片基底 → 色彩 → 曲线 → 肤色优化 → 现代色调 → 色调分离 → 输出锐化
-- **16-bit TIFF 支持**：高位深输入/输出，保留全动态范围
-- **EXIF 保留**：导出时原样复制拍摄信息
-- **无外部依赖**：单 exe 绿色运行，无需 Python / Photoshop / 任何运行时
+| 改进 | 详情 |
+|------|------|
+| **色彩校准重写** | 色温暖调用 R↑(主)+G↑(辅)+B↓(辅) 三通道权控，告别传统 R↑B↓ 的"屎黄/紫蓝"；亮度权重保护暗部高光不偏色 |
+| **quad_boost 渐变加浓** | 滑杆中间温和精准、两端加速加浓，适应严重偏色胶片基座 |
+| **肤色优化增强** | 减黄/减绿/加粉/加红强度范围提升至 18-20%，同样 quad_boost 曲线控制过渡自然 |
+| **soft_clamp 自然滚降** | 边界用 smoothstep 三次缓动代替 hard clamp，消除生硬截止 |
+| **动画管线修复** | 显影动画不再"闪回"胶片基座，全程平滑过渡到最终合成效果 |
+| **性能大幅提升** | composite() 跳过参数全默认的 idle 层级，避免无谓的全像素遍历 |
+| **预设保存/加载** | 保存全部图层参数为预设，一键加载复用 |
+| **全局强度滑杆** | 整体效果透明度控制，原图到效果图无缝混合 |
 
 ### 性能指标
 
-- 1920x1280 预览：<50ms 更新
+- 1920x1280 预览：<30ms 更新（quad_boost 优化后）
 - 全分辨率导出：<2s（视尺寸）
 - 内存：~80MB 峰值
 - GPU：支持 OpenGL/Vulkan/Metal（egui 自动选择）
@@ -60,26 +66,26 @@
 
 ## 📦 下载
 
-| 平台 | 文件 | 大小 |
-|------|------|------|
-| Windows | [FilmRust-Studio-Win-v7.3.1.zip](https://github.com/cscb603/FilmRust-Studio/releases) | ~17MB |
-| macOS (Intel/Apple Silicon) | [FilmRust_Studio_Pro_macos_v7.3.dmg](https://github.com/cscb603/FilmRust-Studio/releases) | ~XXMB |
+| 平台 | 版本 | 文件 | 大小 |
+|------|------|------|------|
+| Windows | v7.3.4 | [FilmRust-Studio-Win-v7.3.4.exe](dist/win-x64/FilmRust-Studio-v7.3.4.exe) | ~17MB |
+| macOS | v7.3 | [FilmRust_Studio_Pro_macos.dmg](https://github.com/cscb603/FilmRust-Studio/releases) | — |
 
-> 💡 Windows 版绿色免安装，解压即可运行。macOS 版需 macOS 12+。
+> 💡 Windows 版绿色免安装，直接双击运行。macOS 版需 macOS 12+。
 
 ---
 
 ## 🚀 快速开始
 
 ### Windows
-1. 下载 `FilmRust-Studio-Win-v7.3.0.zip`
-2. 解压 → 双击 `filmrust-gui-pro.exe`
-3. 拖入照片 → 选风格 → 调参数 → 导出
+1. 下载 `FilmRust-Studio-Win-v7.3.4.exe`
+2. 双击运行 → 拖入照片
+3. 左侧选胶片风格 → 右侧调色彩/曲线/肤色
+4. 点「开始显影」预览 → 导出
 
 ### macOS
-1. 下载 `FilmRust_Studio_Pro_macos_v7.3.dmg`
-2. 双击挂载 → 拖入 Applications
-3. 打开 → 拖入照片 → 选风格 → 导出
+1. 下载 `.dmg` → 拖入 Applications
+2. 打开 → 拖入照片 → 选风格 → 导出
 
 ### Photoshop 集成
 ```bash
@@ -90,11 +96,32 @@
 
 ---
 
+## 🧬 渲染管线
+
+```
+原图 → filmr 物理引擎 → 胶片基座
+                          ↓
+              ┌── Color（色温/色调/饱和度）
+              ├── Curves（对比度/高光/阴影）
+              ├── Grain（颗粒感）
+              ├── Vignette（暗角/光晕）
+              ├── LightLeak（漏光）
+              ├── Blur（模糊特效）
+              ├── SkinHSL（肤色优化）
+              ├── ModernTone（现代色调）
+              ├── SplitTone（色调分离）
+              └── Sharp（输出锐化）
+                          ↓
+              global_strength 混合 → 导出
+```
+
+全部调节层作用在胶片基座之后，F32 精度累加，soft_clamp 边界滚降，每层支持独立 blend_mode + opacity。
+
+---
+
 ## ⚖️ 开源
 
 本项目基于 Rust 开发，核心算法开源于 GitHub。
 欢迎 Issue 和 PR，也欢迎 Star 支持。
-
----
 
 星TAP 实验室 © 2026 | [cscb603@qq.com](mailto:cscb603@qq.com) | 极致速度，极简生活。
