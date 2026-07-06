@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::rc::Rc;
 
 use crate::custom_presets;
-use crate::error::{FilmRustResult, anyhow_err};
+use crate::error::{anyhow_err, FilmRustResult};
 
 /// 单个胶片预设（简化信息，用于 CLI 列表与 UI）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,34 +40,41 @@ pub struct FilmPreset {
     /// 默认饱和度（模拟扫片校色，1.0=中性）
     pub default_saturation: f32,
     /// 肤色优化默认值（增强版）
-    pub skin_remove_yellow: f32,   // 0~100 去黄
-    pub skin_reduce_green: f32,    // 0~100 减绿
-    pub skin_add_pink: f32,        // 0~100 加粉
-    pub skin_add_red: f32,         // 0~100 加红
-    pub skin_brightness: f32,      // -50~+50 亮度微调
+    pub skin_remove_yellow: f32, // 0~100 去黄
+    pub skin_reduce_green: f32, // 0~100 减绿
+    pub skin_add_pink: f32,     // 0~100 加粉
+    pub skin_add_red: f32,      // 0~100 加红
+    pub skin_brightness: f32,   // -50~+50 亮度微调
     /// 色调分离默认值
-    pub split_hh: f32,      // 高光色相 0~360
-    pub split_hs: f32,      // 高光饱和 0~100
-    pub split_sh: f32,      // 阴影色相 0~360
-    pub split_ss: f32,      // 阴影饱和 0~100
-    pub split_balance: f32, // -100~+100
-    pub split_strength: f32,// 0~100
+    pub split_hh: f32, // 高光色相 0~360
+    pub split_hs: f32,          // 高光饱和 0~100
+    pub split_sh: f32,          // 阴影色相 0~360
+    pub split_ss: f32,          // 阴影饱和 0~100
+    pub split_balance: f32,     // -100~+100
+    pub split_strength: f32,    // 0~100
     /// 锐化默认值
-    pub sharp_amount: f32,  // 0~100
+    pub sharp_amount: f32, // 0~100
 }
 
 impl FilmPreset {
     pub fn from_filmr(stock: &FilmStock) -> Self {
         let (manufacturer, name) = split_manufacturer_and_name(&stock.name);
-    
-        let tags = infer_tags(&stock.name, stock.iso, stock.reciprocity.beta, stock.halation_strength);
+
+        let tags = infer_tags(
+            &stock.name,
+            stock.iso,
+            stock.reciprocity.beta,
+            stock.halation_strength,
+        );
         let description = infer_description(&stock.name, &manufacturer, stock.iso);
         // filmr 的 color_matrix 已自带色罩补偿，不做额外默认校色
-    
+
         FilmPreset {
-            id: format!("{}_{}", 
+            id: format!(
+                "{}_{}",
                 manufacturer.to_lowercase().replace(' ', "_"),
-                name.to_lowercase().replace(' ', "_")),
+                name.to_lowercase().replace(' ', "_")
+            ),
             name: stock.name.clone(),
             manufacturer,
             iso: stock.iso,
@@ -80,10 +87,17 @@ impl FilmPreset {
             default_warmth: 0.0,
             default_tint: 0.0,
             default_saturation: 1.0,
-            skin_remove_yellow: 0.0, skin_reduce_green: 0.0,
-            skin_add_pink: 0.0, skin_add_red: 0.0, skin_brightness: 0.0,
-            split_hh: 0.0, split_hs: 0.0, split_sh: 0.0, split_ss: 0.0,
-            split_balance: 0.0, split_strength: 0.0,
+            skin_remove_yellow: 0.0,
+            skin_reduce_green: 0.0,
+            skin_add_pink: 0.0,
+            skin_add_red: 0.0,
+            skin_brightness: 0.0,
+            split_hh: 0.0,
+            split_hs: 0.0,
+            split_sh: 0.0,
+            split_ss: 0.0,
+            split_balance: 0.0,
+            split_strength: 0.0,
             sharp_amount: 0.0,
         }
     }
@@ -108,18 +122,40 @@ fn split_manufacturer_and_name(full: &str) -> (String, String) {
     ];
     for (keyword, brand) in direct_brands {
         if lower.contains(keyword) {
-            let rest = full.to_lowercase()
+            let rest = full
+                .to_lowercase()
                 .replace(keyword, "")
                 .trim_matches(|c: char| c == '-' || c == '_' || c.is_whitespace())
                 .to_string();
-            let display_name = if rest.is_empty() { full.to_string() } else { rest };
+            let display_name = if rest.is_empty() {
+                full.to_string()
+            } else {
+                rest
+            };
             return (brand.to_string(), capitalize_name(&display_name));
         }
     }
 
     // 第二阶段：关键词映射（filmr 的 "Portra 400" → Kodak）
-    let kodak_keywords = ["portra", "tri-x", "ektar", "gold", "ultramax", "t-max", "plus-x", "panatomic"];
-    let fuji_keywords = ["velvia", "provia", "superia", "reala", "xtra", "fujicolor", "neopan"];
+    let kodak_keywords = [
+        "portra",
+        "tri-x",
+        "ektar",
+        "gold",
+        "ultramax",
+        "t-max",
+        "plus-x",
+        "panatomic",
+    ];
+    let fuji_keywords = [
+        "velvia",
+        "provia",
+        "superia",
+        "reala",
+        "xtra",
+        "fujicolor",
+        "neopan",
+    ];
     let cinestill_keywords = ["800t", "50d", "400d", "bwxx", "cs41", "redrum"];
 
     for kw in kodak_keywords {
@@ -214,20 +250,50 @@ fn infer_tags(name: &str, iso: f32, reciprocity: f32, halation: f32) -> Vec<Stri
 /// 推断胶片的色调风格描述（静态查找表 + 关键词匹配）
 fn infer_description(name: &str, manufacturer: &str, iso: f32) -> String {
     const DESC_TABLE: &[(&str, &str)] = &[
-        ("portra 800", "暖调肤色·宽容度高·低光柔和 — 婚礼/室内/弱光人像首选"),
-        ("portra 400", "暖调肤色·低反差·高光滚降柔和 — 经典人像/婚礼万能卷"),
-        ("portra 160", "极细颗粒·中性肤色·高宽容度 — 商业人像/时尚/棚拍"),
+        (
+            "portra 800",
+            "暖调肤色·宽容度高·低光柔和 — 婚礼/室内/弱光人像首选",
+        ),
+        (
+            "portra 400",
+            "暖调肤色·低反差·高光滚降柔和 — 经典人像/婚礼万能卷",
+        ),
+        (
+            "portra 160",
+            "极细颗粒·中性肤色·高宽容度 — 商业人像/时尚/棚拍",
+        ),
         ("gold 200", "暖金黄调·复古感·日常亲切 — 旅行/家庭/生活记录"),
         ("ektar 100", "极高饱和·锐利细腻·色彩浓烈 — 风景/建筑/产品"),
-        ("ektachrome 100 vs", "高饱和正片·鲜艳浓郁·冷暖分明 — 自然风光/花卉/户外"),
-        ("ektachrome 100", "正片·色彩真实·中高饱和·冷调 — 风景/产品/商业摄影"),
-        ("kodachrome 64", "经典正片·暖调·红色突出·时代感 — 旅行/纪实/街拍"),
-        ("kodachrome 25", "极细颗粒·低感·色彩浓郁 — 静物/风景/阳光充足"),
+        (
+            "ektachrome 100 vs",
+            "高饱和正片·鲜艳浓郁·冷暖分明 — 自然风光/花卉/户外",
+        ),
+        (
+            "ektachrome 100",
+            "正片·色彩真实·中高饱和·冷调 — 风景/产品/商业摄影",
+        ),
+        (
+            "kodachrome 64",
+            "经典正片·暖调·红色突出·时代感 — 旅行/纪实/街拍",
+        ),
+        (
+            "kodachrome 25",
+            "极细颗粒·低感·色彩浓郁 — 静物/风景/阳光充足",
+        ),
         ("tri-x 400", "经典粗颗粒·高反差·强戏剧感 — 街拍/纪实/新闻"),
         ("plus-x 125", "细颗粒·中反差·影调丰富 — 风景/静物/人像"),
-        ("velvia 100", "极高饱和正片·绿色突出·风光之王 — 自然风光/花草/户外"),
-        ("velvia 50", "超饱和正片·极细颗粒·低感 — 风光/静物/三脚架拍摄"),
-        ("provia 100f", "正片·色彩准确·中饱和·真实还原 — 风景/产品/商业"),
+        (
+            "velvia 100",
+            "极高饱和正片·绿色突出·风光之王 — 自然风光/花草/户外",
+        ),
+        (
+            "velvia 50",
+            "超饱和正片·极细颗粒·低感 — 风光/静物/三脚架拍摄",
+        ),
+        (
+            "provia 100f",
+            "正片·色彩准确·中饱和·真实还原 — 风景/产品/商业",
+        ),
         ("superia 400", "冷调偏绿·日系清新·通用 — 日常/旅行/街头"),
         ("superia 200", "冷调柔和·细颗粒·清淡 — 日常/人像/旅行"),
         ("superia 100", "冷调·极细颗粒·低感 — 风景/静物/阳光充足"),
@@ -235,8 +301,14 @@ fn infer_description(name: &str, manufacturer: &str, iso: f32) -> String {
         ("xtra 400", "暖调·消费级·通用 — 日常/家庭/旅行"),
         ("neopan 400", "黑白·中反差·影调平滑 — 街拍/纪实/通用"),
         ("neopan 100", "黑白·细颗粒·中反差 — 风景/建筑/静物"),
-        ("cinestill 800t", "钨丝灯色温·冷蓝调·红晕光·电影感 — 夜景/街拍/霓虹灯"),
-        ("cinestill 50d", "日光平衡·细颗粒·电影感·柔和 — 白天/风景/人像"),
+        (
+            "cinestill 800t",
+            "钨丝灯色温·冷蓝调·红晕光·电影感 — 夜景/街拍/霓虹灯",
+        ),
+        (
+            "cinestill 50d",
+            "日光平衡·细颗粒·电影感·柔和 — 白天/风景/人像",
+        ),
         ("hp5 plus 400", "经典黑白·中颗粒·高宽容度 — 街拍/纪实/通用"),
         ("fp4 plus 125", "细颗粒·丰富影调·中反差 — 风景/人像/静物"),
         ("delta 3200", "超高感·粗颗粒·强氛围·暗光 — 音乐会/夜景/情绪"),
@@ -245,8 +317,14 @@ fn infer_description(name: &str, manufacturer: &str, iso: f32) -> String {
         ("pan f plus", "极细颗粒·高反差·高锐度 — 风景/静物/微距"),
         ("polaroid 600", "暖调·低反差·拍立得风格 — 日常/怀旧/创意"),
         ("sx-70", "经典拍立得·柔焦感·怀旧色调 — 怀旧/艺术/创意"),
-        ("lomochrome purple", "紫色调·超现实色彩·创意 — 创意/艺术/实验"),
-        ("lomography color chrome", "高饱和·强对比·lomo风格 — 创意/街头/旅行"),
+        (
+            "lomochrome purple",
+            "紫色调·超现实色彩·创意 — 创意/艺术/实验",
+        ),
+        (
+            "lomography color chrome",
+            "高饱和·强对比·lomo风格 — 创意/街头/旅行",
+        ),
         ("solaris 400", "复古暖调·意式风格·颗粒感 — 怀旧/旅行/日常"),
         ("solaris 100", "复古暖调·细颗粒·阳光 — 怀旧/风景/旅行"),
         ("orwo un54", "电影黑白·德味影调·中反差 — 电影/纪实/街拍"),
@@ -261,10 +339,22 @@ fn infer_description(name: &str, manufacturer: &str, iso: f32) -> String {
         ("precisa 100", "正片·色彩鲜艳·细颗粒 — 风景/户外"),
         ("scala 200", "黑白反转片·高反差·独特 — 创意/艺术"),
         ("optima 200", "暖调柔和·中感光度 — 日常/人像"),
-        ("ultramax 400", "暖调高饱和·浓郁色彩·消费卷王 — 旅行/家庭/街拍"),
-        ("pro 400h", "冷蓝阴影·暖粉高光·日系人像王 — 人像/婚礼/生活记录"),
-        ("pro_400h", "冷蓝阴影·暖粉高光·日系人像王 — 人像/婚礼/生活记录"),
-        ("natura 1600", "高速月光·暖调浓郁·青绿阴影·独特颗粒 — 夜景/室内/街拍"),
+        (
+            "ultramax 400",
+            "暖调高饱和·浓郁色彩·消费卷王 — 旅行/家庭/街拍",
+        ),
+        (
+            "pro 400h",
+            "冷蓝阴影·暖粉高光·日系人像王 — 人像/婚礼/生活记录",
+        ),
+        (
+            "pro_400h",
+            "冷蓝阴影·暖粉高光·日系人像王 — 人像/婚礼/生活记录",
+        ),
+        (
+            "natura 1600",
+            "高速月光·暖调浓郁·青绿阴影·独特颗粒 — 夜景/室内/街拍",
+        ),
     ];
     let lower = name.to_lowercase();
     for &(keyword, desc) in DESC_TABLE {
@@ -304,14 +394,18 @@ pub fn find_preset(query: &str) -> FilmRustResult<FilmPreset> {
     }
 
     // 精确匹配名称
-    if let Some(p) = presets.iter().find(|p| p.name.to_lowercase() == query_lower) {
+    if let Some(p) = presets
+        .iter()
+        .find(|p| p.name.to_lowercase() == query_lower)
+    {
         return Ok(p.clone());
     }
 
     // 模糊匹配
-    if let Some(p) = presets.iter().find(|p|
+    if let Some(p) = presets.iter().find(|p| {
         p.name.to_lowercase().contains(&query_lower)
-            || p.manufacturer.to_lowercase().contains(&query_lower)) {
+            || p.manufacturer.to_lowercase().contains(&query_lower)
+    }) {
         return Ok(p.clone());
     }
 
@@ -339,22 +433,41 @@ pub fn find_filmr_stock(query: &str) -> FilmRustResult<Rc<FilmStock>> {
     }
 
     // 策略3: 去除厂商前缀后匹配 (处理 "kodak portra 400" → "portra 400")
-    let manufacturers = ["kodak ", "fujifilm ", "fuji ", "ilford ", "polaroid ",
-                         "agfa ", "lomography ", "cinestill ", "ferrania ", "orwo ",
-                         "ricoh ", "lucky ", "standard ", "vintage "];
+    let manufacturers = [
+        "kodak ",
+        "fujifilm ",
+        "fuji ",
+        "ilford ",
+        "polaroid ",
+        "agfa ",
+        "lomography ",
+        "cinestill ",
+        "ferrania ",
+        "orwo ",
+        "ricoh ",
+        "lucky ",
+        "standard ",
+        "vintage ",
+    ];
     let mut cleaned = query_lower.clone();
     for mfr in &manufacturers {
         cleaned = cleaned.replace(mfr, "");
     }
     let cleaned = cleaned.trim().to_string();
     if cleaned != query_lower && !cleaned.is_empty() {
-        if let Some(s) = stocks.iter().find(|s| s.name.to_lowercase().contains(&cleaned)) {
+        if let Some(s) = stocks
+            .iter()
+            .find(|s| s.name.to_lowercase().contains(&cleaned))
+        {
             return Ok(s.clone());
         }
     }
 
     // 策略4: stock.name 包含查询词
-    if let Some(s) = stocks.iter().find(|s| s.name.to_lowercase().contains(&query_lower)) {
+    if let Some(s) = stocks
+        .iter()
+        .find(|s| s.name.to_lowercase().contains(&query_lower))
+    {
         return Ok(s.clone());
     }
 
@@ -362,7 +475,12 @@ pub fn find_filmr_stock(query: &str) -> FilmRustResult<Rc<FilmStock>> {
     let query_nospace: String = query_lower.chars().filter(|c| !c.is_whitespace()).collect();
     if query_nospace != query_lower {
         if let Some(s) = stocks.iter().find(|s| {
-            let sn: String = s.name.to_lowercase().chars().filter(|c| !c.is_whitespace()).collect();
+            let sn: String = s
+                .name
+                .to_lowercase()
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
             sn.contains(&query_nospace) || query_nospace.contains(&sn)
         }) {
             return Ok(s.clone());
@@ -370,7 +488,8 @@ pub fn find_filmr_stock(query: &str) -> FilmRustResult<Rc<FilmStock>> {
     }
 
     // 策略6: 关键词全部匹配 (所有非厂商单词都出现在 stock.name 中)
-    let keywords: Vec<&str> = query_lower.split([' ', '_'])
+    let keywords: Vec<&str> = query_lower
+        .split([' ', '_'])
         .filter(|w| w.len() > 1 && !manufacturers.iter().any(|m| m.trim() == *w))
         .collect();
     if keywords.len() >= 2 {
@@ -410,8 +529,10 @@ mod tests {
     #[test]
     fn test_find_filmr_stock_by_name() {
         // portra 是 filmr 内置预设，应能找到
-        assert!(find_filmr_stock("portra").is_ok(),
-            "portra 是已知预设，应能匹配成功");
+        assert!(
+            find_filmr_stock("portra").is_ok(),
+            "portra 是已知预设，应能匹配成功"
+        );
     }
 
     #[test]

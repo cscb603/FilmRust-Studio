@@ -1,0 +1,1 @@
+error: could not compile `filmrust-studio` (lib) due to 18 previous errors

@@ -608,11 +608,12 @@ impl FilmRustPro {
             opened_folders: HashSet::new(),
             global_strength: 100.0,
             presets_dir: {
-                let dir = std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                // 标准用户数据目录（Windows: AppData/Roaming/FilmRust/presets）
+                let dir = dirs::data_dir()
+                    .or_else(|| std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())))
                     .unwrap_or_else(|| PathBuf::from("."))
-                    .join("presets_user");
+                    .join("FilmRust")
+                    .join("presets");
                 let _ = std::fs::create_dir_all(&dir);
                 dir
             },
@@ -1689,6 +1690,30 @@ impl FilmRustPro {
             }
         });
         ui.add_space(6.0);
+        // 上一张/下一张按钮
+        ui.horizontal(|ui| {
+            if ui
+                .button("← 上一张")
+                .on_hover_text("切换到列表中的上一张图片")
+                .clicked()
+            {
+                if self.selected_idx > 0 {
+                    self.selected_idx -= 1;
+                    self.load_image_for_display(ui.ctx());
+                }
+            }
+            if ui
+                .button("下一张 →")
+                .on_hover_text("切换到列表中的下一张图片")
+                .clicked()
+            {
+                if self.selected_idx + 1 < self.files.len() {
+                    self.selected_idx += 1;
+                    self.load_image_for_display(ui.ctx());
+                }
+            }
+        });
+        ui.add_space(4.0);
         let mut to_rem: Option<usize> = None;
         let mut to_sel: Option<usize> = None;
         egui::ScrollArea::vertical()
@@ -2332,7 +2357,7 @@ impl FilmRustPro {
             } => {
                 if ui
                     .add(egui::Slider::new(contrast, -1.0..=1.0).text("中间调对比度"))
-                    .on_hover_text("正=中间调变柔(反差低) 负=中间调变硬(反差高)")
+                    .on_hover_text("正=增加对比度(去灰) 负=降低对比度(柔和) · 原片偏灰时往右拉")
                     .changed()
                 {
                     dirty_post = true;

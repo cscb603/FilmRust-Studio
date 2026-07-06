@@ -12,7 +12,7 @@
 //! - 通过 bat + 标记文件 (`markerPath`) 做同步等待，避免 `app.system()` 异步问题
 //! - bat 写入 `f:\trae-cn\` 无中文目录，避免 cmd 字符集问题
 
-use crate::error::{FilmRustResult, anyhow_err};
+use crate::error::{anyhow_err, FilmRustResult};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -70,12 +70,12 @@ impl JsxGenerator {
 
         // 计算 PS 脚本中的参数值
         let r_shadow_red = (c.reciprocity * 15.0 + c.warmth * 10.0).round() as i32;
-        let r_mid_red    = (c.warmth * 20.0 + 5.0).round() as i32;
-        let r_hl_red     = (c.halation * 15.0 + c.warmth * 15.0).round() as i32;
+        let r_mid_red = (c.warmth * 20.0 + 5.0).round() as i32;
+        let r_hl_red = (c.halation * 15.0 + c.warmth * 15.0).round() as i32;
         let r_shadow_green = (-(c.reciprocity) * 8.0).round() as i32;
-        let r_hl_blue    = (-(c.halation) * 10.0 - c.warmth * 10.0).round() as i32;
+        let r_hl_blue = (-(c.halation) * 10.0 - c.warmth * 10.0).round() as i32;
         let grain_amount = (c.grain * 8.0).round() as i32;
-        let sat_level    = ((c.saturation - 1.0) * 50.0).round() as i32;
+        let sat_level = ((c.saturation - 1.0) * 50.0).round() as i32;
         let halation_blur_radius = (c.halation * 3.0 + 2.0).round() as i32;
         let halation_opacity = (c.halation * 30.0 + 10.0).round() as i32;
 
@@ -311,7 +311,10 @@ mod tests {
         let output = gen.generate();
         assert!(output.len() > 1000, "应生成足够长度的 JSX 脚本");
         assert!(output.contains("FilmRust"), "应包含 FilmRust 标识");
-        assert!(output.contains("ColorBalance"), "应包含 Color Balance 调整层");
+        assert!(
+            output.contains("ColorBalance"),
+            "应包含 Color Balance 调整层"
+        );
         assert!(output.contains("applyAddNoise"), "应包含颗粒生成");
     }
 

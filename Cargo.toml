@@ -1,6 +1,6 @@
 [package]
 name = "filmrust-studio"
-version = "7.3.4"
+version = "7.3.5"
 edition = "2021"
 description = "物理级胶片模拟工具 - FilmRust Studio (Win10 + Mac)"
 authors = ["Geek Assistant"]
