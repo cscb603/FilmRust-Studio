@@ -515,10 +515,12 @@ impl FilmRustPro {
                         let preview_scaled = dynamic_img.resize((w as f32*preview_scale) as u32,(h as f32*preview_scale) as u32,image::imageops::FilterType::Lanczos3);
                         self.preview_cache = Some(preview_scaled.to_rgb8());
                         
-                        // 合成一次后处理层，结果直接存 processed_base
+                        // 合成一次后处理层，并存两份：
+                        //   processed_base → 动画结束后显示
+                        //   anim_dst → 动画从原图过渡到此最终合成结果
                         let comp = self.layers.composite(&rgb8, false, self.global_strength / 100.0);
+                        self.anim_dst = Some(DynamicImage::ImageRgb8(comp.clone()).to_rgba8());
                         self.processed_base = Some(comp);
-                        self.anim_dst = Some(img.to_rgba8());
                         self.animating = true; self.anim_start = Instant::now();
                         self.has_processed = true;
                         self.status = "处理完成 — 调整图层参数实时预览".into(); self.status_ok = true;
@@ -985,9 +987,7 @@ impl eframe::App for FilmRustPro {
                 let t = (self.anim_start.elapsed().as_secs_f32()/self.anim_duration).min(1.0);
                 if let Some(frame) = self.render_developing_frame(t) {
                     if t>=1.0 { self.animating = false; }
-                    let rgb = DynamicImage::ImageRgba8(frame).to_rgb8();
-                    let comp = self.layers.composite(&rgb, false, self.global_strength / 100.0);
-                    Some(DynamicImage::ImageRgb8(comp).to_rgba8())
+                    Some(frame)
                 } else { None }
             } else {
                 // processed_base 已是 composite 结果，直接显示
@@ -1142,10 +1142,8 @@ impl FilmRustPro {
         ui.horizontal(|ui|{
             ui.label(egui::RichText::new("整体强度").size(13.0).color(self.text_accent()));
             let resp = ui.add(egui::Slider::new(&mut self.global_strength, 0.0..=100.0).text("%").suffix("%"));
-            if resp.changed() || resp.drag_stopped() {
-                if !self.is_processing && self.has_processed {
-                    self.recomposite_from_cache();
-                }
+            if (resp.changed() || resp.drag_stopped()) && !self.is_processing && self.has_processed {
+                self.recomposite_from_cache();
             }
         });
         ui.add_space(4.0); ui.separator();
@@ -1254,6 +1252,62 @@ impl FilmRustPro {
                 .show(ui, |ui| {
                     ui.label(egui::RichText::new("层属性").size(14.0).color(self.text_accent()));
                     self.render_layer_properties_inner(ui, i);
+                    // ── 预设保存/加载（放在层属性下面，共用一个滚动区域）──
+                    ui.add_space(8.0); ui.separator();
+                    ui.horizontal(|ui|{
+                        ui.label(egui::RichText::new("预设").size(14.0).color(self.text_accent()));
+                        if ui.small_button("↻").on_hover_text("刷新预设列表").clicked() {
+                            self.user_presets = list_user_presets(&self.presets_dir);
+                        }
+                    });
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui|{
+                        ui.add(egui::TextEdit::singleline(&mut self.preset_name_input).hint_text("预设名称").desired_width(120.0));
+                        if ui.small_button("💾 保存").on_hover_text("保存当前所有图层参数为预设").clicked() {
+                            let name = self.preset_name_input.trim().to_string();
+                            if !name.is_empty() {
+                                match save_user_preset(&name, &self.layers.layers, &self.presets_dir) {
+                                    Ok(fname) => {
+                                        self.status = format!("预设已保存: {}", fname);
+                                        self.status_ok = true;
+                                        self.user_presets = list_user_presets(&self.presets_dir);
+                                        self.preset_name_input.clear();
+                                    }
+                                    Err(e) => { self.status = format!("保存预设失败: {}", e); self.status_ok = false; }
+                                }
+                            }
+                        }
+                    });
+                    if !self.user_presets.is_empty() {
+                        let mut to_load: Option<Vec<Layer>> = None;
+                        let mut to_del: Option<usize> = None;
+                        for (i, p) in self.user_presets.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                let nm = p.name.clone();
+                                if ui.selectable_label(false, egui::RichText::new(&nm).size(12.0)).clicked() {
+                                    to_load = Some(p.layers.clone());
+                                }
+                                if ui.small_button("×").on_hover_text("删除此预设").clicked() {
+                                    to_del = Some(i);
+                                }
+                            });
+                        }
+                        if let Some(layers) = to_load {
+                            self.layers.layers = layers;
+                            self.selected_layer = Some(0);
+                            if !self.is_processing && self.has_processed { self.recomposite_from_cache(); }
+                            self.status = "预设已加载".into(); self.status_ok = true;
+                        }
+                        if let Some(i) = to_del {
+                            let name = self.user_presets[i].name.clone();
+                            if delete_user_preset(&name, &self.presets_dir).is_ok() {
+                                self.user_presets.remove(i);
+                                self.status = format!("预设已删除: {}", name); self.status_ok = true;
+                            }
+                        }
+                    } else {
+                        ui.label(egui::RichText::new("尚无保存的预设。调好参数后输入名称保存").size(11.0).color(self.text_dim()));
+                    }
                 });
             // 固定按钮区（始终可见）
             ui.add_space(4.0);
@@ -1265,72 +1319,6 @@ impl FilmRustPro {
                     if ui.button(egui::RichText::new(cmp_lbl).size(14.0)).on_hover_text(if self.comparison_mode{"关闭对比模式，退出左右分割对比"}else{"打开对比模式：左=原图 右=处理后，拖拽分割线切换显示区域"}).clicked(){self.comparison_mode = !self.comparison_mode;}
                 }
             });
-        }
-
-        // ── 预设保存/加载 ──
-        ui.add_space(6.0); ui.separator();
-        ui.horizontal(|ui|{
-            ui.label(egui::RichText::new("预设").size(14.0).color(self.text_accent()));
-            if ui.small_button("↻ 刷新").on_hover_text("刷新已保存的预设列表").clicked() {
-                self.user_presets = list_user_presets(&self.presets_dir);
-            }
-        });
-        ui.horizontal(|ui|{
-            ui.add(egui::TextEdit::singleline(&mut self.preset_name_input).hint_text("预设名称").desired_width(120.0));
-            if ui.small_button("💾 保存").on_hover_text("将当前所有图层参数保存为预设文件").clicked() {
-                let name = self.preset_name_input.trim().to_string();
-                if !name.is_empty() {
-                    match save_user_preset(&name, &self.layers.layers, &self.presets_dir) {
-                        Ok(fname) => {
-                            self.status = format!("预设已保存: {}", fname);
-                            self.status_ok = true;
-                            self.user_presets = list_user_presets(&self.presets_dir);
-                            self.preset_name_input.clear();
-                        }
-                        Err(e) => {
-                            self.status = format!("保存预设失败: {}", e);
-                            self.status_ok = false;
-                        }
-                    }
-                }
-            }
-        });
-        ui.add_space(2.0);
-        if !self.user_presets.is_empty() {
-            let mut to_load: Option<Vec<Layer>> = None;
-            let mut to_del: Option<usize> = None;
-            egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
-                for (i, p) in self.user_presets.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        let nm = p.name.clone();
-                        if ui.selectable_label(false, egui::RichText::new(&nm).size(12.0)).clicked() {
-                            to_load = Some(p.layers.clone());
-                        }
-                        if ui.small_button("×").on_hover_text("删除此预设").clicked() {
-                            to_del = Some(i);
-                        }
-                    });
-                }
-            });
-            if let Some(layers) = to_load {
-                self.layers.layers = layers;
-                self.selected_layer = Some(0);
-                if !self.is_processing && self.has_processed {
-                    self.recomposite_from_cache();
-                }
-                self.status = "预设已加载".into();
-                self.status_ok = true;
-            }
-            if let Some(i) = to_del {
-                let name = self.user_presets[i].name.clone();
-                if delete_user_preset(&name, &self.presets_dir).is_ok() {
-                    self.user_presets.remove(i);
-                    self.status = format!("预设已删除: {}", name);
-                    self.status_ok = true;
-                }
-            }
-        } else {
-            ui.label(egui::RichText::new("尚无保存的预设。调好参数后输入名称点击保存").size(11.0).color(self.text_dim()));
         }
     }
 

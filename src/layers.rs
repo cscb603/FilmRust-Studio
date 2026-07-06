@@ -104,6 +104,45 @@ fn hue_weight(h: f32, center: f32, half_width: f32) -> f32 {
 }
 
 // ============================================================
+// 参数化软膝 S 曲线（一条曲线同时控制暗部提亮+高光压缩）
+// ============================================================
+
+/// soft_knee: x∈[0,1] 的参数化 S 曲线
+/// lift>0: 提亮暗部; compress>0: 压暗高光
+/// 输出始终 ∈ [0,1]，导数≥0 保证单调
+fn soft_knee(x: f32, lift: f32, compress: f32) -> f32 {
+    // k<1 曲线上凸(提亮), k>1 曲线下凹(压暗)
+    let k = (1.0 - lift * 0.3 + compress * 0.25).clamp(0.1, 5.0);
+    x / (x + k * (1.0 - x))
+}
+
+/// smoothstep: 三次缓动曲线，替代纯线性 clamp 实现自然过渡
+#[inline(always)]
+fn smoothstep(t: f32) -> f32 {
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// soft_clamp: 在边界用 smoothstep 滚降，避免 hard clamp 的生硬截止
+/// 0→0.05 和 0.95→1.0 端用二次滚降，中间段保持线性
+#[inline(always)]
+fn soft_clamp(x: f32) -> f32 {
+    if x <= 0.0 { 0.0 }
+    else if x < 0.05 { smoothstep(x / 0.05) * 0.05 }
+    else if x <= 0.95 { x }
+    else if x < 1.0 { 1.0 - smoothstep((1.0 - x) / 0.05) * 0.05 }
+    else { 1.0 }
+}
+
+/// quad_boost: 三次方强化曲线，保留符号。
+/// t ∈ [-1,1]，输出也是 [-1,1]。
+/// 滑杆中间→变化平缓，两端→变化剧烈（渐变加浓）
+#[inline(always)]
+fn quad_boost(t: f32, power: f32) -> f32 {
+    let abs = t.abs().powf(1.0 / power);
+    t.signum() * abs.min(1.0)
+}
+
+// ============================================================
 // 调整层类型
 // ============================================================
 
@@ -253,6 +292,32 @@ impl Layer {
             opacity: 1.0,
             visible: true,
             layer_type,
+        }
+    }
+
+    pub fn is_identity(&self) -> bool {
+        match &self.layer_type {
+            LayerType::Color { warmth, tint, saturation } =>
+                warmth.abs() < 0.005 && tint.abs() < 0.005 && (saturation - 1.0).abs() < 0.01,
+            LayerType::Curves { contrast, highlights, shadows } =>
+                contrast.abs() < 0.01 && highlights.abs() < 0.01 && shadows.abs() < 0.01,
+            LayerType::Grain { amount, size } =>
+                *amount < 0.005 && *size < 0.005,
+            LayerType::Vignette { strength, halation } =>
+                *strength < 0.005 && *halation < 0.005,
+            LayerType::LightLeak { intensity, .. } => *intensity < 0.005,
+            LayerType::Blur { motion, dof, swirl } =>
+                *motion < 0.005 && *dof < 0.005 && *swirl < 0.005,
+            LayerType::SkinHsl { enabled, remove_yellow, reduce_green, add_pink, add_red, skin_brightness } =>
+                !*enabled || (*remove_yellow < 1.0 && *reduce_green < 1.0 && *add_pink < 1.0
+                    && *add_red < 1.0 && skin_brightness.abs() < 0.5),
+            LayerType::ModernTone { enabled, strength, .. } =>
+                !*enabled || *strength < 0.5,
+            LayerType::SplitTone { enabled, strength, .. } =>
+                !*enabled || *strength < 0.5,
+            LayerType::Sharp { enabled, amount, .. } =>
+                !*enabled || *amount < 0.5,
+            LayerType::FilmBase { .. } => false,
         }
     }
 }
@@ -609,6 +674,8 @@ impl LayerStack {
             if matches!(layer.layer_type, LayerType::Sharp { .. }) && !include_sharp {
                 continue;
             }
+            // 跳过所有参数均为默认值的调节层（不产生任何视觉效果）
+            if layer.is_identity() { continue; }
 
             // 从 f32 累加缓冲创建当前层的输入 u8 图像
             let mut layer_input = RgbImage::new(w, h);
@@ -687,7 +754,7 @@ impl LayerStack {
     }
 
     /// 渲染单个调整层的效果图
-    fn render_layer_effect(&self, layer: &Layer, input: &RgbImage) -> RgbImage {
+    pub fn render_layer_effect(&self, layer: &Layer, input: &RgbImage) -> RgbImage {
         match &layer.layer_type {
             LayerType::FilmBase { .. } => input.clone(),
             LayerType::Color { warmth, tint, saturation } => {
@@ -737,54 +804,72 @@ impl LayerStack {
     // ============================================================
 
     fn apply_color(&self, img: &RgbImage, warmth: f32, tint: f32, saturation: f32) -> RgbImage {
-        let mut out = img.clone();
         if warmth.abs() < 0.005 && tint.abs() < 0.005 && (saturation - 1.0).abs() < 0.01 {
-            return out;
+            return img.clone();
         }
+        let mut out = img.clone();
+
+        // quad_boost: 滑杆中间温和，两端加速加浓
+        // warmth/tint 传入范围为 [-100, +100]，归一化后 boost 再反向归一
+        let w_raw = (warmth / 100.0).clamp(-1.0, 1.0);
+        let t_raw = (tint / 100.0).clamp(-1.0, 1.0);
+        let w_boost = quad_boost(w_raw, 2.0);
+        let t_boost = quad_boost(t_raw, 2.0);
+
+        // 色温 warmth: [-1, +1]
+        // 正=暖调(黄): R↑(主)+G↑(辅)+B↓(辅) — 自然暖黄，非单纯 R↑B↓ 的橙色
+        // 负=冷调(蓝): R↓(辅)+G↓(微)+B↑(主) — 清爽冷蓝，非紫色调
+        // G 通道参与色温 → 暖黄有"绿"度，冷蓝不偏品
+        let w = w_boost * 0.007;
+        let r_scale = 1.0 + w * 1.2;
+        let g_scale = 1.0 + w * 0.4;
+        let b_scale = 1.0 - w * 1.1;
+
+        // 色调 tint: [-1, +1]
+        // 正=品红: G↓(主)+R↑B↑(微) — 扫膜偏绿→加品校正
+        // 负=绿色: G↑(主)+R↓B↓(微) — 扫膜偏品→加绿校正
+        let t = t_boost * 0.005;
+        let r_tint = 1.0 + t * 0.3;
+        let g_tint = 1.0 - t * 1.6;
+        let b_tint = 1.0 + t * 0.3;
+
+        let sat = saturation.max(0.0);
+
         for pixel in out.pixels_mut() {
             let r = pixel[0] as f32 / 255.0;
             let g = pixel[1] as f32 / 255.0;
             let b = pixel[2] as f32 / 255.0;
-            let lum = 0.299 * r + 0.587 * g + 0.114 * b;
 
-            let warmth_weight = 1.0 - (lum - 0.5).abs() * 1.6;
-            let mut r2 = r * (1.0 + warmth * 0.12 * warmth_weight);
-            let mut b2 = b * (1.0 - warmth * 0.12 * warmth_weight);
-            let mut g2 = g;
+            // 亮度权重: 中间调主调整，阴影和高光减量（保护暗部/高光不被偏色破坏）
+            let luma = 0.299 * r + 0.587 * g + 0.114 * b;
+            let w_mid = (1.0 - (luma - 0.5).abs() * 1.6).clamp(0.3, 1.0);
 
-            let tint_w = 0.3 + lum * 0.7;
-            if tint > 0.0 {
-                r2 *= 1.0 + tint * 0.12 * tint_w;
-                g2 *= 1.0 - tint * 0.08 * tint_w;
-                b2 *= 1.0 + tint * 0.12 * tint_w;
-            } else {
-                let a = tint.abs();
-                r2 *= 1.0 - a * 0.06 * tint_w;
-                g2 *= 1.0 + a * 0.12 * tint_w;
-                b2 *= 1.0 - a * 0.06 * tint_w;
-            }
+            // 色温 + 色调（通道缩放 + 亮度权重）
+            let r2 = r * (1.0 + (r_scale * r_tint - 1.0) * w_mid);
+            let g2 = g * (1.0 + (g_scale * g_tint - 1.0) * w_mid);
+            let b2 = b * (1.0 + (b_scale * b_tint - 1.0) * w_mid);
 
-            let sat_w = 1.0 - (lum - 0.5).abs() * 1.5;
-            let effective_sat = 1.0 + (saturation - 1.0) * sat_w;
-            if (effective_sat - 1.0).abs() > 0.005 {
+            // 饱和度（灰度加权法）
+            let (r3, g3, b3) = if (sat - 1.0).abs() > 0.01 {
                 let gray = 0.299 * r2 + 0.587 * g2 + 0.114 * b2;
-                r2 = gray + (r2 - gray) * effective_sat;
-                g2 = gray + (g2 - gray) * effective_sat;
-                b2 = gray + (b2 - gray) * effective_sat;
-            }
+                (gray + (r2 - gray) * sat, gray + (g2 - gray) * sat, gray + (b2 - gray) * sat)
+            } else {
+                (r2, g2, b2)
+            };
 
-            pixel[0] = (r2.clamp(0.0, 1.0) * 255.0) as u8;
-            pixel[1] = (g2.clamp(0.0, 1.0) * 255.0) as u8;
-            pixel[2] = (b2.clamp(0.0, 1.0) * 255.0) as u8;
+            // soft_clamp 自然滚降，不硬切
+            pixel[0] = (soft_clamp(r3) * 255.0) as u8;
+            pixel[1] = (soft_clamp(g3) * 255.0) as u8;
+            pixel[2] = (soft_clamp(b3) * 255.0) as u8;
         }
         out
     }
 
     fn apply_curves(&self, img: &RgbImage, contrast: f32, highlights: f32, shadows: f32) -> RgbImage {
-        let mut out = img.clone();
         if contrast.abs() < 0.01 && highlights.abs() < 0.01 && shadows.abs() < 0.01 {
-            return out;
+            return img.clone();
         }
+        let mut out = img.clone();
         let cx = [0.25_f32, 0.5, 0.75];
         let y0 = (0.25 - shadows * 0.25).clamp(0.0, 1.0);
         let y1 = (0.50 - contrast * 0.25).clamp(0.0, 1.0);
@@ -794,8 +879,9 @@ impl LayerStack {
         let mut lut = [0u8; 256];
         for (i, entry) in lut.iter_mut().enumerate() {
             let x = i as f32 / 255.0;
-            let y = catmull_rom_curve(x, &pts).clamp(0.0, 1.0);
-            *entry = (y * 255.0) as u8;
+            let y = catmull_rom_curve(x, &pts);
+            // soft_clamp 自然滚降，避免硬切带来的生硬对比感
+            *entry = (soft_clamp(y) * 255.0) as u8;
         }
 
         for pixel in out.pixels_mut() {
@@ -954,13 +1040,17 @@ impl LayerStack {
         if remove_yellow < 1.0 && reduce_green < 1.0 && add_pink < 1.0
             && add_red < 1.0 && skin_brightness.abs() < 0.5 { return out; }
 
-        let sat_red = (remove_yellow / 100.0) * 0.15;   // 最大降饱和 15%
-        let hue_shift = -(remove_yellow / 100.0) * 0.012; // 最大偏红 0.012
-        let grn_red = (reduce_green / 100.0) * 0.12;    // 最大降绿 12%
-        let pnk_r = (add_pink / 100.0) * 0.06;           // 加粉红通道 +6%
-        let pnk_b = (add_pink / 100.0) * 0.05;           // 加粉蓝通道 +5%
-        let red_boost = (add_red / 100.0) * 0.05;        // 加红 +5%
-        let lum_adj = (skin_brightness / 50.0) * 0.05;   // 亮度 ±5%
+        // 所有参数范围 0~100，quad_boost 让中段柔和、末端可加浓
+        let boost = |v: f32| { let r = (v / 100.0).clamp(0.0, 1.0); quad_boost(r, 2.0).max(0.0) };
+        let abs_boost = |v: f32| { let r = (v / 100.0).clamp(-1.0, 1.0); quad_boost(r, 2.0) };
+
+        let sat_red   = boost(remove_yellow) * 0.20;    // 最大降饱和 20%
+        let hue_shift = -abs_boost(remove_yellow) * 0.016; // 最大偏红 0.016
+        let grn_red   = boost(reduce_green) * 0.18;     // 最大降绿 18%
+        let pnk_r     = boost(add_pink) * 0.10;           // 加粉红通道 +10%
+        let pnk_b     = boost(add_pink) * 0.08;           // 加粉蓝通道 +8%
+        let red_boost = boost(add_red) * 0.08;           // 加红 +8%
+        let lum_adj   = abs_boost(skin_brightness) * 0.05; // 亮度 ±5%
 
         for pixel in out.pixels_mut() {
             let r = pixel[0] as f32 / 255.0;
@@ -1006,9 +1096,9 @@ impl LayerStack {
             let red_w = w * (1.0 - s * 0.2);
             r2 = (r2 * (1.0 + red_boost * red_w)).clamp(0.0, 1.0);
 
-            pixel[0] = (r2 * 255.0) as u8;
-            pixel[1] = (g2 * 255.0) as u8;
-            pixel[2] = (b3 * 255.0) as u8;
+            pixel[0] = (soft_clamp(r2) * 255.0) as u8;
+            pixel[1] = (soft_clamp(g2) * 255.0) as u8;
+            pixel[2] = (soft_clamp(b3) * 255.0) as u8;
         }
         out
     }
@@ -1036,148 +1126,95 @@ impl LayerStack {
         let sf = (strength / 100.0).clamp(0.0, 1.5);
         if sf < 0.01 { return out; }
 
-        // 归一化参数到内部工作范围
-        let sh_lift  = (shadow_lift  / 50.0).clamp(-1.0, 1.0) * sf;  // -1~1
+        let sh_lift  = (shadow_lift  / 50.0).clamp(-1.0, 1.0) * sf;
         let hl_comp  = (highlight_compress / 100.0).clamp(0.0, 1.0) * sf;
         let mc_adj   = (midtone_contrast / 50.0).clamp(-1.0, 1.0) * sf;
-        let sh_hue   = shadow_hue / 360.0;
+        let sh_h     = shadow_hue / 360.0;
         let sh_sat   = (shadow_sat / 100.0).clamp(0.0, 0.5) * sf;
-        let hl_hue   = highlight_hue / 360.0;
+        let hl_h     = highlight_hue / 360.0;
         let hl_sat   = (highlight_sat / 100.0).clamp(0.0, 0.5) * sf;
         let sat_sup  = (sat_high_suppress / 100.0).clamp(0.0, 0.6) * sf;
         let warm     = (warmth_shift / 30.0).clamp(-1.0, 1.0) * sf;
         let grain_amt= (fine_grain / 100.0).clamp(0.0, 0.5) * sf;
 
-        // 阈值（影响过渡宽度）
-        let sh_cut   = 0.35_f32; // 阴影区到 <0.35 开始色偏
-        let hl_cut   = 0.65_f32; // 高光区到 >0.65 开始色偏
-        let sat_thr  = 0.45_f32; // 饱和度高于此值开始压缩
+        let sh_cut = 0.35_f32;
+        let hl_cut = 0.65_f32;
+        let sat_thr = 0.50_f32;
 
-        // 确定性噪点（LCG + 像素坐标扰动，二维分布无条纹）
         let mut seed: u32 = 0xdeadbeef;
 
         for (x, y, pixel) in out.enumerate_pixels_mut() {
             let r = pixel[0] as f32 / 255.0;
             let g = pixel[1] as f32 / 255.0;
             let b = pixel[2] as f32 / 255.0;
-            let (h, s, mut l) = rgb_to_hsl(r, g, b);
 
-            // ── Step1: 参数化 tone curve ──
-            if sh_lift.abs() > 0.001 && l < sh_cut {
-                let t = 1.0 - (l / sh_cut);
-                let t = t * t * (3.0 - 2.0 * t);
-                if sh_lift > 0.0 {
-                    l += (1.0 - l) * sh_lift * 0.35 * t;
-                } else {
-                    l *= 1.0 + sh_lift * 0.4 * t;
-                }
+            // Step1: HSL（纯 RGB 空间，不经过 Oklab）
+            let (mut h, mut s, mut l) = rgb_to_hsl(r, g, b);
+
+            // Step2: 软膝 S 曲线（shadow_lift + highlight_compress）
+            l = soft_knee(l, sh_lift, hl_comp);
+
+            // Step3: 中间调对比度（HSL L 通道 gamma）
+            if mc_adj.abs() > 0.001 && l > 0.15 && l < 0.85 {
+                let nl = (l - 0.15) / 0.7;
+                let gamma = if mc_adj > 0.0 { 1.0 + mc_adj * 0.4 } else { 1.0 / (1.0 - mc_adj * 0.35) };
+                l = 0.15 + nl.powf(1.0 / gamma) * 0.7;
             }
-            if hl_comp > 0.001 && l > hl_cut {
-                let t = (l - hl_cut) / (1.0 - hl_cut);
-                let roll = t * t;
-                let pull = hl_comp * 0.22 * roll;
-                l *= 1.0 - pull;
-            }
-            if mc_adj.abs() > 0.001 {
-                let gamma = if mc_adj > 0.0 {
-                    1.0 + mc_adj * 0.5
-                } else {
-                    1.0 / (1.0 - mc_adj * 0.4)
-                };
-                if l > 0.2 && l < 0.8 {
-                    let nl = (l - 0.2) / 0.6;
-                    let nl = nl.powf(1.0 / gamma);
-                    l = 0.2 + nl * 0.6;
-                }
-            }
-            // [安全] tone curve 后 clamp，防 NaN/inf
             if !l.is_finite() { l = 0.5; }
-            l = l.clamp(0.002, 0.998);
+            l = l.clamp(0.01, 0.99);
 
-            // ── Step2: 亮度相关色偏 ──
-            let mut h2 = h;
-            let mut s2 = s;
+            // Step4: 阴影/高光色偏 — smoothstep 实现自然过渡
             if sh_sat > 0.002 && l < sh_cut + 0.1 {
-                let t = if l < sh_cut {
-                    1.0 - l / sh_cut
-                } else {
-                    (sh_cut + 0.1 - l) / 0.1
-                };
-                let w = t.clamp(0.0, 1.0) * sh_sat;
-                let wrap = |a: f32| -> f32 {
-                    if !a.is_finite() { return 0.0; }
-                    if a < 0.0 { a + 1.0 } else if a >= 1.0 { a - 1.0 } else { a }
-                };
-                let mut dh = sh_hue - h;
-                if dh > 0.5 { dh -= 1.0; }
-                if dh < -0.5 { dh += 1.0; }
-                h2 = wrap(h + dh * w);
-                s2 = (s + w * 0.5).min(1.0);
+                let t_raw = if l < sh_cut { 1.0 - l / sh_cut } else { (sh_cut + 0.1 - l) / 0.1 };
+                let w = smoothstep(t_raw.clamp(0.0, 1.0)) * sh_sat;
+                let dh = sh_h - h;
+                let dh_adj = if dh > 0.5 { dh - 1.0 } else if dh < -0.5 { dh + 1.0 } else { dh };
+                h = (h + dh_adj * w + 1.0) % 1.0;
+                s = (s + w * 0.15).min(1.0);
             }
             if hl_sat > 0.002 && l > hl_cut - 0.1 {
-                let t = if l > hl_cut {
-                    (l - hl_cut) / (1.0 - hl_cut)
-                } else {
-                    (l - (hl_cut - 0.1)) / 0.1
-                };
-                let w = t.clamp(0.0, 1.0) * hl_sat;
-                let wrap = |a: f32| -> f32 {
-                    if !a.is_finite() { return 0.0; }
-                    if a < 0.0 { a + 1.0 } else if a >= 1.0 { a - 1.0 } else { a }
-                };
-                let mut dh = hl_hue - h2;
-                if dh > 0.5 { dh -= 1.0; }
-                if dh < -0.5 { dh += 1.0; }
-                h2 = wrap(h2 + dh * w);
-                s2 = (s2 + w * 0.4).min(1.0);
+                let t_raw = if l > hl_cut { (l - hl_cut) / (1.0 - hl_cut) } else { (l - (hl_cut - 0.1)) / 0.1 };
+                let w = smoothstep(t_raw.clamp(0.0, 1.0)) * hl_sat;
+                let dh = hl_h - h;
+                let dh_adj = if dh > 0.5 { dh - 1.0 } else if dh < -0.5 { dh + 1.0 } else { dh };
+                h = (h + dh_adj * w + 1.0) % 1.0;
+                s = (s + w * 0.12).min(1.0);
             }
-            // [安全] h2/s2 必需有限
-            if !h2.is_finite() { h2 = 0.0; }
-            if !s2.is_finite() { s2 = 0.0; }
 
-            // ── Step3: 非线性饱和度压缩 ──
-            if sat_sup > 0.001 && s2 > sat_thr {
-                let over = (s2 - sat_thr) / (1.0 - sat_thr);
-                s2 -= over * sat_sup * 0.3;
-                s2 = s2.max(0.0);
+            // Step5: 高饱和区压缩
+            if sat_sup > 0.001 && s > sat_thr {
+                let over = (s - sat_thr) / (1.0 - sat_thr).max(0.01);
+                s = (s - over * sat_sup * 0.5).max(0.02);
             }
-            s2 = s2.clamp(0.0, 1.0);
+            s = s.clamp(0.0, 1.0);
 
-            // ── Step4: 整体色温 ──
-            let (mut r2, mut g2, mut b2) = hsl_to_rgb(h2, s2, l);
-            // [安全] hsl_to_rgb 输出必须有限
-            if !r2.is_finite() { r2 = l; g2 = l; b2 = l; }
+            // Step6: 色温（HSL 色相偏移）
             if warm.abs() > 0.001 {
-                let lum_w = 1.0 - (l - 0.55).abs() * 1.5; // 中高调为主
+                let lum_w = 1.0 - (l - 0.55).abs() * 1.5;
                 let lum_w = lum_w.clamp(0.0, 1.0);
-                if warm > 0.0 {
-                    r2 *= 1.0 + warm * 0.08 * lum_w;
-                    b2 *= 1.0 - warm * 0.08 * lum_w;
-                } else {
-                    let a = warm.abs();
-                    r2 *= 1.0 - a * 0.06 * lum_w;
-                    b2 *= 1.0 + a * 0.08 * lum_w;
-                }
+                h = (h + warm * 0.015 * lum_w + 1.0) % 1.0;
             }
 
-            // ── Step5: 细颗粒（亮度加权，中间调最多）──
+            // Step7: HSL → RGB
+            let (mut rr, mut gg, mut bb) = hsl_to_rgb(h, s, l);
+
+            // Step8: 细颗粒
             if grain_amt > 0.001 {
                 let grain_w = 1.0 - ((l - 0.5).abs() * 1.8);
                 let grain_w = grain_w.max(0.0);
-                // 用像素坐标扰动seed，产生二维分布的颗粒（避免水平线）
                 let px = x.wrapping_mul(374761393).wrapping_add(y.wrapping_mul(668265263));
                 let local_seed = seed.wrapping_add(px);
                 let n = ((local_seed >> 8) as f32 / 16777216.0) - 0.5;
                 seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
                 let gn = n * grain_amt * 0.06 * grain_w;
-                r2 = (r2 + gn).clamp(0.0, 1.0);
-                g2 = (g2 + gn * 0.95).clamp(0.0, 1.0);
-                b2 = (b2 + gn * 1.05).clamp(0.0, 1.0);
+                rr = (rr + gn).clamp(0.0, 1.0);
+                gg = (gg + gn * 0.95).clamp(0.0, 1.0);
+                bb = (bb + gn * 1.05).clamp(0.0, 1.0);
             }
 
-            pixel[0] = (r2.clamp(0.0, 1.0) * 255.0) as u8;
-            pixel[1] = (g2.clamp(0.0, 1.0) * 255.0) as u8;
-            pixel[2] = (b2.clamp(0.0, 1.0) * 255.0) as u8;
+            pixel[0] = (rr.clamp(0.0, 1.0) * 255.0) as u8;
+            pixel[1] = (gg.clamp(0.0, 1.0) * 255.0) as u8;
+            pixel[2] = (bb.clamp(0.0, 1.0) * 255.0) as u8;
         }
         out
     }
@@ -1195,54 +1232,55 @@ impl LayerStack {
         let str_factor = strength / 100.0;
         if str_factor < 0.01 || (hs < 0.01 && ss < 0.01) { return out; }
 
-        // 高光色（HSL），饱和度为 hs * 强度
+        // 高光/阴影色相（归一化 0-1）和饱和度强度
+        let h_h = hh;
         let h_sat = hs * str_factor;
+        let s_h = sh;
         let s_sat = ss * str_factor;
 
-        // balance: -100=全阴影着色，+100=全高光着色
-        let bal = balance / 100.0; // -1~+1
-        // 色交界点: 0.5 为中间，balance 偏移
-        let mid = 0.5 + bal * 0.3;
+        // balance: -100=全阴影，+100=全高光
+        let mid = (0.5 + (balance / 100.0) * 0.3).clamp(0.15, 0.85);
 
         for pixel in out.pixels_mut() {
             let r = pixel[0] as f32 / 255.0;
             let g = pixel[1] as f32 / 255.0;
             let b = pixel[2] as f32 / 255.0;
-            let lum = 0.299 * r + 0.587 * g + 0.114 * b;
 
-            // 高光权重：亮度 > mid 时渐增
-            let hw = if lum > mid {
-                ((lum - mid) / (1.0 - mid)).clamp(0.0, 1.0)
-            } else { 0.0 };
-            // 阴影权重：亮度 < mid 时渐增
-            let sw = if lum < mid {
-                ((mid - lum) / mid).clamp(0.0, 1.0)
-            } else { 0.0 };
+            // HSL（纯 RGB 空间）
+            let (h0, s0, l) = rgb_to_hsl(r, g, b);
 
-            let to_hsl = |hue: f32, sat: f32, weight: f32| -> (f32, f32, f32) {
-                if weight < 0.01 || sat < 0.01 { return (r, g, b); }
-                let w = weight * sat * 0.3; // 最大着色幅度
-                let (hr, hg, hb) = hsl_to_rgb(hue, 1.0, lum);
-                (r + (hr - r) * w, g + (hg - g) * w, b + (hb - b) * w)
-            };
+            // smoothstep 权重：亮度越高越靠近高光，越低越靠近阴影
+            let hw = if l > mid { smoothstep(((l - mid) / (1.0 - mid)).clamp(0.0, 1.0)) } else { 0.0 };
+            let sw = if l < mid { smoothstep(((mid - l) / mid).clamp(0.0, 1.0)) } else { 0.0 };
 
-            let (r2, g2, b2) = if hw > sw {
-                to_hsl(hh, h_sat, hw)
-            } else {
-                let (r_s, g_s, b_s) = to_hsl(sh, s_sat, sw);
-                // 中间调区域用 hw:sw 比例混合
-                if hw > 0.01 && sw > 0.01 {
-                    let total = hw + sw;
-                    let (r_h, g_h, b_h) = to_hsl(hh, h_sat, hw);
-                    (r_s + (r_h - r_s) * hw / total,
-                     g_s + (g_h - g_s) * hw / total,
-                     b_s + (b_h - b_s) * hw / total)
-                } else { (r_s, g_s, b_s) }
-            };
+            let mut h = h0;
+            let mut s = s0;
 
-            pixel[0] = (r2.clamp(0.0, 1.0) * 255.0) as u8;
-            pixel[1] = (g2.clamp(0.0, 1.0) * 255.0) as u8;
-            pixel[2] = (b2.clamp(0.0, 1.0) * 255.0) as u8;
+            if h_sat > 0.01 && hw > 0.01 {
+                let dh = h_h - h;
+                let dh_adj = if dh > 0.5 { dh - 1.0 } else if dh < -0.5 { dh + 1.0 } else { dh };
+                let w = hw * h_sat * 0.5;
+                h = (h + dh_adj * w + 1.0) % 1.0;
+                s = (s + w * 0.20).min(1.0);
+            }
+
+            if s_sat > 0.01 && sw > 0.01 {
+                let dh = s_h - h;
+                let dh_adj = if dh > 0.5 { dh - 1.0 } else if dh < -0.5 { dh + 1.0 } else { dh };
+                let w = sw * s_sat * 0.4;
+                h = (h + dh_adj * w + 1.0) % 1.0;
+                s = (s + w * 0.15).min(1.0);
+            }
+
+            // strength 混合
+            let h_final = h0 + (h - h0) * str_factor;
+            let s_final = s0 + (s - s0) * str_factor;
+
+            let (rr, gg, bb) = hsl_to_rgb(h_final, s_final.clamp(0.0, 1.0), l);
+
+            pixel[0] = (rr.clamp(0.0, 1.0) * 255.0) as u8;
+            pixel[1] = (gg.clamp(0.0, 1.0) * 255.0) as u8;
+            pixel[2] = (bb.clamp(0.0, 1.0) * 255.0) as u8;
         }
         out
     }
