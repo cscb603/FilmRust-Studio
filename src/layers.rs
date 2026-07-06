@@ -7,7 +7,7 @@
 //! - Sharp 仅用于最终输出，不参与实时预览
 
 use image::RgbImage;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 // ============================================================
@@ -28,8 +28,13 @@ pub enum BlendMode {
 
 impl BlendMode {
     pub const ALL: &[BlendMode] = &[
-        Self::Normal, Self::Multiply, Self::Screen,
-        Self::Overlay, Self::SoftLight, Self::Color, Self::Luminosity,
+        Self::Normal,
+        Self::Multiply,
+        Self::Screen,
+        Self::Overlay,
+        Self::SoftLight,
+        Self::Color,
+        Self::Luminosity,
     ];
 
     pub fn label(&self) -> &'static str {
@@ -67,7 +72,11 @@ fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     } else {
         (r - g) / d + 4.0
     };
-    ((h / 6.0).clamp(0.0, 1.0), s.clamp(0.0, 1.0), l.clamp(0.0, 1.0))
+    (
+        (h / 6.0).clamp(0.0, 1.0),
+        s.clamp(0.0, 1.0),
+        l.clamp(0.0, 1.0),
+    )
 }
 
 /// HSL → RGB，所有值在 [0,1] 范围
@@ -76,31 +85,53 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
         return (l, l, l);
     }
     let hue_to_rgb = |p: f32, q: f32, mut t: f32| -> f32 {
-        if t < 0.0 { t += 1.0; }
-        if t > 1.0 { t -= 1.0; }
-        if t < 1.0 / 6.0 { p + (q - p) * 6.0 * t }
-        else if t < 0.5 { q }
-        else if t < 2.0 / 3.0 { p + (q - p) * (2.0 / 3.0 - t) * 6.0 }
-        else { p }
+        if t < 0.0 {
+            t += 1.0;
+        }
+        if t > 1.0 {
+            t -= 1.0;
+        }
+        if t < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * t
+        } else if t < 0.5 {
+            q
+        } else if t < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - t) * 6.0
+        } else {
+            p
+        }
     };
-    let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+    let q = if l < 0.5 {
+        l * (1.0 + s)
+    } else {
+        l + s - l * s
+    };
     let p = 2.0 * l - q;
-    (hue_to_rgb(p, q, h + 1.0 / 3.0),
-     hue_to_rgb(p, q, h),
-     hue_to_rgb(p, q, h - 1.0 / 3.0))
+    (
+        hue_to_rgb(p, q, h + 1.0 / 3.0),
+        hue_to_rgb(p, q, h),
+        hue_to_rgb(p, q, h - 1.0 / 3.0),
+    )
 }
 
 /// 计算某色相到目标色相的圆环距离（归一化到 [0,0.5]）
 fn hue_distance(h: f32, target: f32) -> f32 {
     let d = (h - target).abs();
-    if d > 0.5 { 1.0 - d } else { d }
+    if d > 0.5 {
+        1.0 - d
+    } else {
+        d
+    }
 }
 
 /// 在某个色相范围上的软权重（三角窗函数）
 fn hue_weight(h: f32, center: f32, half_width: f32) -> f32 {
     let d = hue_distance(h, center);
-    if d >= half_width { 0.0 }
-    else { 1.0 - d / half_width }
+    if d >= half_width {
+        0.0
+    } else {
+        1.0 - d / half_width
+    }
 }
 
 // ============================================================
@@ -126,11 +157,17 @@ fn smoothstep(t: f32) -> f32 {
 /// 0→0.05 和 0.95→1.0 端用二次滚降，中间段保持线性
 #[inline(always)]
 fn soft_clamp(x: f32) -> f32 {
-    if x <= 0.0 { 0.0 }
-    else if x < 0.05 { smoothstep(x / 0.05) * 0.05 }
-    else if x <= 0.95 { x }
-    else if x < 1.0 { 1.0 - smoothstep((1.0 - x) / 0.05) * 0.05 }
-    else { 1.0 }
+    if x <= 0.0 {
+        0.0
+    } else if x < 0.05 {
+        smoothstep(x / 0.05) * 0.05
+    } else if x <= 0.95 {
+        x
+    } else if x < 1.0 {
+        1.0 - smoothstep((1.0 - x) / 0.05) * 0.05
+    } else {
+        1.0
+    }
 }
 
 /// quad_boost: 三次方强化曲线，保留符号。
@@ -168,29 +205,19 @@ pub enum LayerType {
         shadows: f32,
     },
     /// 颗粒 — 胶片颗粒叠加
-    Grain {
-        amount: f32,
-        size: f32,
-    },
+    Grain { amount: f32, size: f32 },
     /// 暗角/光晕 — 边缘压暗 + 高光扩散
-    Vignette {
-        strength: f32,
-        halation: f32,
-    },
+    Vignette { strength: f32, halation: f32 },
     /// 漏光 — 彩色边缘渐变（HSL + 位置）
     LightLeak {
-        intensity: f32,      // 强度 0-1
-        hue: f32,            // 色相 0-360°
-        saturation: f32,     // 饱和度 0-1
-        lightness: f32,      // 亮度 0-1
-        position: u8,        // 位置：0=左上，1=右上，2=左下，3=右下，4=四角
+        intensity: f32,  // 强度 0-1
+        hue: f32,        // 色相 0-360°
+        saturation: f32, // 饱和度 0-1
+        lightness: f32,  // 亮度 0-1
+        position: u8,    // 位置：0=左上，1=右上，2=左下，3=右下，4=四角
     },
     /// 模糊 — 运动/景深/旋转
-    Blur {
-        motion: f32,
-        dof: f32,
-        swirl: f32,
-    },
+    Blur { motion: f32, dof: f32, swirl: f32 },
     /// 肤色优化（增强版）
     /// 仅针对亚洲肤色范围微调，过渡自然不伤画质
     SkinHsl {
@@ -205,35 +232,35 @@ pub enum LayerType {
     /// 日系空气/韩系奶油/清透冷白/美式复古咖 等现代摄影风格
     ModernTone {
         enabled: bool,
-        style_idx: u8,         // 0=日系空气 1=韩系奶油 2=清透冷白 3=美式复古咖
-        strength: f32,         // 0~150, 整体强度
-        shadow_lift: f32,      // -50~+50, 暗部抬升
+        style_idx: u8,           // 0=日系空气 1=韩系奶油 2=清透冷白 3=美式复古咖
+        strength: f32,           // 0~150, 整体强度
+        shadow_lift: f32,        // -50~+50, 暗部抬升
         highlight_compress: f32, // 0~100, 高光压缩
-        midtone_contrast: f32, // -50~+50, 中间调对比
-        shadow_hue: f32,       // 0~360
-        shadow_sat: f32,       // 0~50
-        highlight_hue: f32,    // 0~360
-        highlight_sat: f32,    // 0~50
-        sat_high_suppress: f32, // 0~100, 高饱和区压缩
-        warmth_shift: f32,     // -30~+30, 整体色温微调
-        fine_grain: f32,       // 0~100, 细颗粒
+        midtone_contrast: f32,   // -50~+50, 中间调对比
+        shadow_hue: f32,         // 0~360
+        shadow_sat: f32,         // 0~50
+        highlight_hue: f32,      // 0~360
+        highlight_sat: f32,      // 0~50
+        sat_high_suppress: f32,  // 0~100, 高饱和区压缩
+        warmth_shift: f32,       // -30~+30, 整体色温微调
+        fine_grain: f32,         // 0~100, 细颗粒
     },
     /// 色调分离（Split Toning）— 高光橙/阴影青
     SplitTone {
         enabled: bool,
-        highlight_hue: f32,     // 0~360
+        highlight_hue: f32,        // 0~360
         highlight_saturation: f32, // 0~100
-        shadow_hue: f32,        // 0~360
-        shadow_saturation: f32, // 0~100
-        balance: f32,           // -100~+100, 偏向高光
-        strength: f32,          // 0~100%
+        shadow_hue: f32,           // 0~360
+        shadow_saturation: f32,    // 0~100
+        balance: f32,              // -100~+100, 偏向高光
+        strength: f32,             // 0~100%
     },
     /// 输出锐化（Unsharp Mask）— 按分辨率自适应
     Sharp {
         enabled: bool,
-        amount: f32,            // 0~100
-        radius: f32,            // 0.5~3.0 px
-        auto_radius: bool,      // 自动根据分辨率推算
+        amount: f32,       // 0~100
+        radius: f32,       // 0.5~3.0 px
+        auto_radius: bool, // 自动根据分辨率推算
     },
 }
 
@@ -297,26 +324,46 @@ impl Layer {
 
     pub fn is_identity(&self) -> bool {
         match &self.layer_type {
-            LayerType::Color { warmth, tint, saturation } =>
-                warmth.abs() < 0.005 && tint.abs() < 0.005 && (saturation - 1.0).abs() < 0.01,
-            LayerType::Curves { contrast, highlights, shadows } =>
-                contrast.abs() < 0.01 && highlights.abs() < 0.01 && shadows.abs() < 0.01,
-            LayerType::Grain { amount, size } =>
-                *amount < 0.005 && *size < 0.005,
-            LayerType::Vignette { strength, halation } =>
-                *strength < 0.005 && *halation < 0.005,
+            LayerType::Color {
+                warmth,
+                tint,
+                saturation,
+            } => warmth.abs() < 0.005 && tint.abs() < 0.005 && (saturation - 1.0).abs() < 0.01,
+            LayerType::Curves {
+                contrast,
+                highlights,
+                shadows,
+            } => contrast.abs() < 0.01 && highlights.abs() < 0.01 && shadows.abs() < 0.01,
+            LayerType::Grain { amount, size } => *amount < 0.005 && *size < 0.005,
+            LayerType::Vignette { strength, halation } => *strength < 0.005 && *halation < 0.005,
             LayerType::LightLeak { intensity, .. } => *intensity < 0.005,
-            LayerType::Blur { motion, dof, swirl } =>
-                *motion < 0.005 && *dof < 0.005 && *swirl < 0.005,
-            LayerType::SkinHsl { enabled, remove_yellow, reduce_green, add_pink, add_red, skin_brightness } =>
-                !*enabled || (*remove_yellow < 1.0 && *reduce_green < 1.0 && *add_pink < 1.0
-                    && *add_red < 1.0 && skin_brightness.abs() < 0.5),
-            LayerType::ModernTone { enabled, strength, .. } =>
-                !*enabled || *strength < 0.5,
-            LayerType::SplitTone { enabled, strength, .. } =>
-                !*enabled || *strength < 0.5,
-            LayerType::Sharp { enabled, amount, .. } =>
-                !*enabled || *amount < 0.5,
+            LayerType::Blur { motion, dof, swirl } => {
+                *motion < 0.005 && *dof < 0.005 && *swirl < 0.005
+            }
+            LayerType::SkinHsl {
+                enabled,
+                remove_yellow,
+                reduce_green,
+                add_pink,
+                add_red,
+                skin_brightness,
+            } => {
+                !*enabled
+                    || (*remove_yellow < 1.0
+                        && *reduce_green < 1.0
+                        && *add_pink < 1.0
+                        && *add_red < 1.0
+                        && skin_brightness.abs() < 0.5)
+            }
+            LayerType::ModernTone {
+                enabled, strength, ..
+            } => !*enabled || *strength < 0.5,
+            LayerType::SplitTone {
+                enabled, strength, ..
+            } => !*enabled || *strength < 0.5,
+            LayerType::Sharp {
+                enabled, amount, ..
+            } => !*enabled || *amount < 0.5,
             LayerType::FilmBase { .. } => false,
         }
     }
@@ -329,7 +376,8 @@ impl Layer {
 pub fn catmull_rom(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
     let t2 = t * t;
     let t3 = t2 * t;
-    0.5 * (2.0 * p1 + (p2 - p0) * t
+    0.5 * (2.0 * p1
+        + (p2 - p0) * t
         + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
         + (3.0 * p1 - p0 - 3.0 * p2 + p3) * t3)
 }
@@ -356,7 +404,9 @@ pub fn catmull_rom_curve(x: f32, pts: &[(f32, f32); 5]) -> f32 {
 /// 单方向 box blur — 滑动窗口累加器 O(w*h)，与半径无关
 fn box_blur_horiz(src: &RgbImage, radius: u32) -> RgbImage {
     let (w, h) = src.dimensions();
-    if radius == 0 || w == 0 { return src.clone(); }
+    if radius == 0 || w == 0 {
+        return src.clone();
+    }
     let mut out = RgbImage::new(w, h);
     let r = radius as usize;
     for y in 0..h {
@@ -365,25 +415,35 @@ fn box_blur_horiz(src: &RgbImage, radius: u32) -> RgbImage {
         // 初始化窗口：[0, min(r, w-1)]
         for x in 0..=(r as u32).min(w - 1) {
             let p = src.get_pixel(x, y);
-            for c in 0..3 { sum[c] += p[c] as i32; }
+            for c in 0..3 {
+                sum[c] += p[c] as i32;
+            }
             cnt += 1;
         }
         out.get_pixel_mut(0, y).0 = [
-            (sum[0] / cnt) as u8, (sum[1] / cnt) as u8, (sum[2] / cnt) as u8,
+            (sum[0] / cnt) as u8,
+            (sum[1] / cnt) as u8,
+            (sum[2] / cnt) as u8,
         ];
         for x in 1..w {
             let add_x = (x as usize + r).min(w as usize - 1);
             let p_add = src.get_pixel(add_x as u32, y);
-            for c in 0..3 { sum[c] += p_add[c] as i32; }
+            for c in 0..3 {
+                sum[c] += p_add[c] as i32;
+            }
             cnt += 1;
             if x as usize > r {
                 let rem_x = x as usize - r - 1;
                 let p_rem = src.get_pixel(rem_x as u32, y);
-                for c in 0..3 { sum[c] -= p_rem[c] as i32; }
+                for c in 0..3 {
+                    sum[c] -= p_rem[c] as i32;
+                }
                 cnt -= 1;
             }
             out.get_pixel_mut(x, y).0 = [
-                (sum[0] / cnt) as u8, (sum[1] / cnt) as u8, (sum[2] / cnt) as u8,
+                (sum[0] / cnt) as u8,
+                (sum[1] / cnt) as u8,
+                (sum[2] / cnt) as u8,
             ];
         }
     }
@@ -392,7 +452,9 @@ fn box_blur_horiz(src: &RgbImage, radius: u32) -> RgbImage {
 
 fn box_blur_vert(src: &RgbImage, radius: u32) -> RgbImage {
     let (w, h) = src.dimensions();
-    if radius == 0 || h == 0 { return src.clone(); }
+    if radius == 0 || h == 0 {
+        return src.clone();
+    }
     let mut out = RgbImage::new(w, h);
     let r = radius as usize;
     for x in 0..w {
@@ -400,25 +462,35 @@ fn box_blur_vert(src: &RgbImage, radius: u32) -> RgbImage {
         let mut cnt = 0i32;
         for y in 0..=(r as u32).min(h - 1) {
             let p = src.get_pixel(x, y);
-            for c in 0..3 { sum[c] += p[c] as i32; }
+            for c in 0..3 {
+                sum[c] += p[c] as i32;
+            }
             cnt += 1;
         }
         out.get_pixel_mut(x, 0).0 = [
-            (sum[0] / cnt) as u8, (sum[1] / cnt) as u8, (sum[2] / cnt) as u8,
+            (sum[0] / cnt) as u8,
+            (sum[1] / cnt) as u8,
+            (sum[2] / cnt) as u8,
         ];
         for y in 1..h {
             let add_y = (y as usize + r).min(h as usize - 1);
             let p_add = src.get_pixel(x, add_y as u32);
-            for c in 0..3 { sum[c] += p_add[c] as i32; }
+            for c in 0..3 {
+                sum[c] += p_add[c] as i32;
+            }
             cnt += 1;
             if y as usize > r {
                 let rem_y = y as usize - r - 1;
                 let p_rem = src.get_pixel(x, rem_y as u32);
-                for c in 0..3 { sum[c] -= p_rem[c] as i32; }
+                for c in 0..3 {
+                    sum[c] -= p_rem[c] as i32;
+                }
                 cnt -= 1;
             }
             out.get_pixel_mut(x, y).0 = [
-                (sum[0] / cnt) as u8, (sum[1] / cnt) as u8, (sum[2] / cnt) as u8,
+                (sum[0] / cnt) as u8,
+                (sum[1] / cnt) as u8,
+                (sum[2] / cnt) as u8,
             ];
         }
     }
@@ -427,7 +499,9 @@ fn box_blur_vert(src: &RgbImage, radius: u32) -> RgbImage {
 
 /// 3-pass box blur ≈ Gaussian blur，半径 r 控制模糊程度
 fn fast_gaussian_blur(img: &RgbImage, radius: u32) -> RgbImage {
-    if radius == 0 { return img.clone(); }
+    if radius == 0 {
+        return img.clone();
+    }
     let p1 = box_blur_horiz(img, radius);
     let p2 = box_blur_vert(&p1, radius);
     let p3 = box_blur_horiz(&p2, radius);
@@ -453,7 +527,9 @@ fn apply_motion_blur(img: &RgbImage, amount: f32) -> RgbImage {
                 let sx = (x as i32 + d).clamp(0, w as i32 - 1) as u32;
                 let sy = (y as i32 + d).clamp(0, h as i32 - 1) as u32;
                 let p = img.get_pixel(sx, sy);
-                for c in 0..3 { sum[c] += p[c] as i32; }
+                for c in 0..3 {
+                    sum[c] += p[c] as i32;
+                }
                 count += 1;
             }
             out.get_pixel_mut(x, y).0 = [
@@ -485,7 +561,9 @@ fn apply_dof_blur(img: &RgbImage, amount: f32) -> RgbImage {
             for dx in -r..=r {
                 let sx = (x as i32 + dx).clamp(0, w as i32 - 1) as u32;
                 let p = img.get_pixel(sx, y);
-                for c in 0..3 { sum[c] += p[c] as i32; }
+                for c in 0..3 {
+                    sum[c] += p[c] as i32;
+                }
                 count += 1;
             }
             pass1.get_pixel_mut(x, y).0 = [
@@ -505,7 +583,9 @@ fn apply_dof_blur(img: &RgbImage, amount: f32) -> RgbImage {
             for dy in -r..=r {
                 let sy = (y as i32 + dy).clamp(0, h as i32 - 1) as u32;
                 let p = pass1.get_pixel(x, sy);
-                for c in 0..3 { sum[c] += p[c] as i32; }
+                for c in 0..3 {
+                    sum[c] += p[c] as i32;
+                }
                 count += 1;
             }
             out.get_pixel_mut(x, y).0 = [
@@ -610,7 +690,10 @@ impl LayerStack {
     /// 按显影顺序插入
     pub fn add_sorted(&mut self, layer: Layer) {
         let order = layer_type_order(&layer.layer_type);
-        let pos = self.layers.iter().position(|l| layer_type_order(&l.layer_type) > order);
+        let pos = self
+            .layers
+            .iter()
+            .position(|l| layer_type_order(&l.layer_type) > order);
         match pos {
             Some(idx) => self.layers.insert(idx, layer),
             None => self.layers.push(layer),
@@ -637,45 +720,62 @@ impl LayerStack {
 
     /// 判断某个 LayerType 是否属于"后处理"类（不影响 filmr 缓存）
     pub fn is_post_layer(lt: &LayerType) -> bool {
-        matches!(lt,
-            LayerType::Color{..} |
-            LayerType::Curves{..} |
-            LayerType::Grain{..} |
-            LayerType::Vignette{..} |
-            LayerType::LightLeak{..} |
-            LayerType::Blur{..} |
-            LayerType::SkinHsl{..} |
-            LayerType::ModernTone{..} |
-            LayerType::SplitTone{..}
+        matches!(
+            lt,
+            LayerType::Color { .. }
+                | LayerType::Curves { .. }
+                | LayerType::Grain { .. }
+                | LayerType::Vignette { .. }
+                | LayerType::LightLeak { .. }
+                | LayerType::Blur { .. }
+                | LayerType::SkinHsl { .. }
+                | LayerType::ModernTone { .. }
+                | LayerType::SplitTone { .. }
         )
     }
 
     /// 判断是否属于需要 filmr 重新运算的层（影响缓存的）
     pub fn is_filmr_layer(lt: &LayerType) -> bool {
-        matches!(lt, LayerType::FilmBase{..})
+        matches!(lt, LayerType::FilmBase { .. })
     }
 
     /// 合成所有图层到 base_img 上（f32 累加管线避免精度丢失）
     /// global_strength: 0.0~1.0，最终结果与原始 base_img 的混合比例
-    pub fn composite(&self, base_img: &RgbImage, include_sharp: bool, global_strength: f32) -> RgbImage {
+    pub fn composite(
+        &self,
+        base_img: &RgbImage,
+        include_sharp: bool,
+        global_strength: f32,
+    ) -> RgbImage {
         let (w, h) = base_img.dimensions();
         let s = global_strength.clamp(0.0, 1.0);
 
         // f32 累加缓冲区：初始化为 base_img
-        let mut acc: Vec<[f32; 3]> = base_img.pixels().map(|p| [
-            p[0] as f32 / 255.0,
-            p[1] as f32 / 255.0,
-            p[2] as f32 / 255.0,
-        ]).collect();
+        let mut acc: Vec<[f32; 3]> = base_img
+            .pixels()
+            .map(|p| {
+                [
+                    p[0] as f32 / 255.0,
+                    p[1] as f32 / 255.0,
+                    p[2] as f32 / 255.0,
+                ]
+            })
+            .collect();
 
         for layer in &self.layers {
-            if !layer.visible { continue; }
-            if matches!(layer.layer_type, LayerType::FilmBase { .. }) { continue; }
+            if !layer.visible {
+                continue;
+            }
+            if matches!(layer.layer_type, LayerType::FilmBase { .. }) {
+                continue;
+            }
             if matches!(layer.layer_type, LayerType::Sharp { .. }) && !include_sharp {
                 continue;
             }
             // 跳过所有参数均为默认值的调节层（不产生任何视觉效果）
-            if layer.is_identity() { continue; }
+            if layer.is_identity() {
+                continue;
+            }
 
             // 从 f32 累加缓冲创建当前层的输入 u8 图像
             let mut layer_input = RgbImage::new(w, h);
@@ -711,23 +811,49 @@ impl LayerStack {
     }
 
     /// f32 累加混合：将 effect 图层的 u8 像素转为 f32 并混合到 acc 缓冲区
-    fn blend_onto_f32(&self, acc: &mut [[f32; 3]], effect: &RgbImage, mode: BlendMode, opacity: f32) {
+    fn blend_onto_f32(
+        &self,
+        acc: &mut [[f32; 3]],
+        effect: &RgbImage,
+        mode: BlendMode,
+        opacity: f32,
+    ) {
         for (a, e) in acc.iter_mut().zip(effect.pixels()) {
-            let ef = [e[0] as f32 / 255.0, e[1] as f32 / 255.0, e[2] as f32 / 255.0];
+            let ef = [
+                e[0] as f32 / 255.0,
+                e[1] as f32 / 255.0,
+                e[2] as f32 / 255.0,
+            ];
             let blended = match mode {
                 BlendMode::Normal => ef,
                 BlendMode::Multiply => [a[0] * ef[0], a[1] * ef[1], a[2] * ef[2]],
-                BlendMode::Screen => [1.0 - (1.0 - a[0]) * (1.0 - ef[0]),
-                                       1.0 - (1.0 - a[1]) * (1.0 - ef[1]),
-                                       1.0 - (1.0 - a[2]) * (1.0 - ef[2])],
+                BlendMode::Screen => [
+                    1.0 - (1.0 - a[0]) * (1.0 - ef[0]),
+                    1.0 - (1.0 - a[1]) * (1.0 - ef[1]),
+                    1.0 - (1.0 - a[2]) * (1.0 - ef[2]),
+                ],
                 BlendMode::Overlay => {
-                    let over = |b: f32, l: f32| if b < 0.5 { 2.0 * b * l } else { 1.0 - 2.0 * (1.0 - b) * (1.0 - l) };
+                    let over = |b: f32, l: f32| {
+                        if b < 0.5 {
+                            2.0 * b * l
+                        } else {
+                            1.0 - 2.0 * (1.0 - b) * (1.0 - l)
+                        }
+                    };
                     [over(a[0], ef[0]), over(a[1], ef[1]), over(a[2], ef[2])]
                 }
                 BlendMode::SoftLight => {
                     let soft = |b: f32, l: f32| {
-                        if l < 0.5 { b - (1.0 - 2.0 * l) * b * (1.0 - b) }
-                        else { b + (2.0 * l - 1.0) * ((if b < 0.25 { ((16.0 * b - 12.0) * b + 4.0) * b } else { b.sqrt() }) - b) }
+                        if l < 0.5 {
+                            b - (1.0 - 2.0 * l) * b * (1.0 - b)
+                        } else {
+                            b + (2.0 * l - 1.0)
+                                * ((if b < 0.25 {
+                                    ((16.0 * b - 12.0) * b + 4.0) * b
+                                } else {
+                                    b.sqrt()
+                                }) - b)
+                        }
                     };
                     [soft(a[0], ef[0]), soft(a[1], ef[1]), soft(a[2], ef[2])]
                 }
@@ -739,7 +865,11 @@ impl LayerStack {
                 BlendMode::Luminosity => {
                     let lum = |r: f32, g: f32, b: f32| 0.299 * r + 0.587 * g + 0.114 * b;
                     let src_lum = lum(a[0], a[1], a[2]);
-                    let scale = if src_lum > 0.0 { lum(ef[0], ef[1], ef[2]) / src_lum } else { 1.0 };
+                    let scale = if src_lum > 0.0 {
+                        lum(ef[0], ef[1], ef[2]) / src_lum
+                    } else {
+                        1.0
+                    };
                     [a[0] * scale, a[1] * scale, a[2] * scale]
                 }
             };
@@ -757,43 +887,125 @@ impl LayerStack {
     pub fn render_layer_effect(&self, layer: &Layer, input: &RgbImage) -> RgbImage {
         match &layer.layer_type {
             LayerType::FilmBase { .. } => input.clone(),
-            LayerType::Color { warmth, tint, saturation } => {
-                self.apply_color(input, *warmth, *tint, *saturation)
-            }
-            LayerType::Curves { contrast, highlights, shadows } => {
-                self.apply_curves(input, *contrast, *highlights, *shadows)
-            }
-            LayerType::Grain { amount, size } => {
-                self.apply_grain(input, *amount, *size)
-            }
+            LayerType::Color {
+                warmth,
+                tint,
+                saturation,
+            } => self.apply_color(input, *warmth, *tint, *saturation),
+            LayerType::Curves {
+                contrast,
+                highlights,
+                shadows,
+            } => self.apply_curves(input, *contrast, *highlights, *shadows),
+            LayerType::Grain { amount, size } => self.apply_grain(input, *amount, *size),
             LayerType::Vignette { strength, halation } => {
                 self.apply_vignette(input, *strength, *halation)
             }
-            LayerType::LightLeak { intensity, hue, saturation, lightness, position } => {
-                self.apply_light_leak(input, *intensity, *hue, *saturation, *lightness, *position)
+            LayerType::LightLeak {
+                intensity,
+                hue,
+                saturation,
+                lightness,
+                position,
+            } => self.apply_light_leak(input, *intensity, *hue, *saturation, *lightness, *position),
+            LayerType::Blur { motion, dof, swirl } => self.apply_blur(input, *motion, *dof, *swirl),
+            LayerType::SkinHsl {
+                enabled,
+                remove_yellow,
+                reduce_green,
+                add_pink,
+                add_red,
+                skin_brightness,
+            } => {
+                if !*enabled {
+                    return input.clone();
+                }
+                self.apply_skin_hsl(
+                    input,
+                    *remove_yellow,
+                    *reduce_green,
+                    *add_pink,
+                    *add_red,
+                    *skin_brightness,
+                )
             }
-            LayerType::Blur { motion, dof, swirl } => {
-                self.apply_blur(input, *motion, *dof, *swirl)
+            LayerType::ModernTone {
+                enabled,
+                style_idx,
+                strength,
+                shadow_lift,
+                highlight_compress,
+                midtone_contrast,
+                shadow_hue,
+                shadow_sat,
+                highlight_hue,
+                highlight_sat,
+                sat_high_suppress,
+                warmth_shift,
+                fine_grain,
+            } => {
+                if !*enabled {
+                    return input.clone();
+                }
+                self.apply_modern_tone(
+                    input,
+                    *style_idx,
+                    *strength,
+                    *shadow_lift,
+                    *highlight_compress,
+                    *midtone_contrast,
+                    *shadow_hue,
+                    *shadow_sat,
+                    *highlight_hue,
+                    *highlight_sat,
+                    *sat_high_suppress,
+                    *warmth_shift,
+                    *fine_grain,
+                )
             }
-            LayerType::SkinHsl { enabled, remove_yellow, reduce_green, add_pink, add_red, skin_brightness } => {
-                if !*enabled { return input.clone(); }
-                self.apply_skin_hsl(input, *remove_yellow, *reduce_green, *add_pink, *add_red, *skin_brightness)
+            LayerType::SplitTone {
+                enabled,
+                highlight_hue,
+                highlight_saturation,
+                shadow_hue,
+                shadow_saturation,
+                balance,
+                strength,
+            } => {
+                if !*enabled {
+                    return input.clone();
+                }
+                self.apply_split_tone(
+                    input,
+                    *highlight_hue / 360.0,
+                    *highlight_saturation / 100.0,
+                    *shadow_hue / 360.0,
+                    *shadow_saturation / 100.0,
+                    *balance,
+                    *strength,
+                )
             }
-            LayerType::ModernTone { enabled, style_idx, strength, shadow_lift, highlight_compress, midtone_contrast, shadow_hue, shadow_sat, highlight_hue, highlight_sat, sat_high_suppress, warmth_shift, fine_grain } => {
-                if !*enabled { return input.clone(); }
-                self.apply_modern_tone(input, *style_idx, *strength, *shadow_lift, *highlight_compress, *midtone_contrast,
-                    *shadow_hue, *shadow_sat, *highlight_hue, *highlight_sat, *sat_high_suppress, *warmth_shift, *fine_grain)
-            }
-            LayerType::SplitTone { enabled, highlight_hue, highlight_saturation, shadow_hue, shadow_saturation, balance, strength } => {
-                if !*enabled { return input.clone(); }
-                self.apply_split_tone(input, *highlight_hue / 360.0, *highlight_saturation / 100.0, *shadow_hue / 360.0, *shadow_saturation / 100.0, *balance, *strength)
-            }
-            LayerType::Sharp { enabled, amount, radius, auto_radius } => {
-                if !*enabled { return input.clone(); }
+            LayerType::Sharp {
+                enabled,
+                amount,
+                radius,
+                auto_radius,
+            } => {
+                if !*enabled {
+                    return input.clone();
+                }
                 let r = if *auto_radius {
                     let longest = input.width().max(input.height()) as f32;
-                    if longest > 4000.0 { 1.5 } else if longest > 2000.0 { 1.0 } else { 0.8 }
-                } else { *radius };
+                    if longest > 4000.0 {
+                        1.5
+                    } else if longest > 2000.0 {
+                        1.0
+                    } else {
+                        0.8
+                    }
+                } else {
+                    *radius
+                };
                 self.apply_sharp(input, *amount, r)
             }
         }
@@ -852,7 +1064,11 @@ impl LayerStack {
             // 饱和度（灰度加权法）
             let (r3, g3, b3) = if (sat - 1.0).abs() > 0.01 {
                 let gray = 0.299 * r2 + 0.587 * g2 + 0.114 * b2;
-                (gray + (r2 - gray) * sat, gray + (g2 - gray) * sat, gray + (b2 - gray) * sat)
+                (
+                    gray + (r2 - gray) * sat,
+                    gray + (g2 - gray) * sat,
+                    gray + (b2 - gray) * sat,
+                )
             } else {
                 (r2, g2, b2)
             };
@@ -865,7 +1081,13 @@ impl LayerStack {
         out
     }
 
-    fn apply_curves(&self, img: &RgbImage, contrast: f32, highlights: f32, shadows: f32) -> RgbImage {
+    fn apply_curves(
+        &self,
+        img: &RgbImage,
+        contrast: f32,
+        highlights: f32,
+        shadows: f32,
+    ) -> RgbImage {
         if contrast.abs() < 0.01 && highlights.abs() < 0.01 && shadows.abs() < 0.01 {
             return img.clone();
         }
@@ -874,7 +1096,13 @@ impl LayerStack {
         let y0 = (0.25 - shadows * 0.25).clamp(0.0, 1.0);
         let y1 = (0.50 - contrast * 0.25).clamp(0.0, 1.0);
         let y2 = (0.75 + highlights * 0.25).clamp(0.0, 1.0);
-        let pts = [(0.0, 0.0), (cx[0], y0), (cx[1], y1), (cx[2], y2), (1.0, 1.0)];
+        let pts = [
+            (0.0, 0.0),
+            (cx[0], y0),
+            (cx[1], y1),
+            (cx[2], y2),
+            (1.0, 1.0),
+        ];
 
         let mut lut = [0u8; 256];
         for (i, entry) in lut.iter_mut().enumerate() {
@@ -893,7 +1121,9 @@ impl LayerStack {
     }
 
     fn apply_grain(&self, img: &RgbImage, amount: f32, _size: f32) -> RgbImage {
-        if amount < 0.01 { return img.clone(); }
+        if amount < 0.01 {
+            return img.clone();
+        }
         let mut out = img.clone();
         for (x, y, pixel) in out.enumerate_pixels_mut() {
             // 确定性伪随机：基于像素坐标的 LCG seed
@@ -901,11 +1131,13 @@ impl LayerStack {
                 ^ (y as u64).wrapping_mul(1442695040888963407);
             let noise_scale = amount * 0.3;
             // 每通道独立噪声（亮度相关：中间调最强，高光/暗部减弱）
-            let lum = (0.299 * pixel[0] as f32 + 0.587 * pixel[1] as f32 + 0.114 * pixel[2] as f32) / 255.0;
+            let lum = (0.299 * pixel[0] as f32 + 0.587 * pixel[1] as f32 + 0.114 * pixel[2] as f32)
+                / 255.0;
             let lum_w = 1.0 - (lum - 0.5).abs() * 1.5;
             let lum_w = lum_w.max(0.2);
             for c in 0..3 {
-                let local_seed = px_seed.wrapping_add((c as u64 + 1).wrapping_mul(2862933555777941757));
+                let local_seed =
+                    px_seed.wrapping_add((c as u64 + 1).wrapping_mul(2862933555777941757));
                 let rnd = ((local_seed >> 33) as f32 / (u32::MAX as f32)) - 0.5;
                 let noise = rnd * noise_scale * lum_w;
                 let val = (pixel[c] as f32 / 255.0 + noise).clamp(0.0, 1.0);
@@ -916,7 +1148,9 @@ impl LayerStack {
     }
 
     fn apply_vignette(&self, img: &RgbImage, strength: f32, halation: f32) -> RgbImage {
-        if strength < 0.01 && halation < 0.01 { return img.clone(); }
+        if strength < 0.01 && halation < 0.01 {
+            return img.clone();
+        }
         let mut out = img.clone();
         let (w, h) = (img.width() as f32, img.height() as f32);
         let cx = w / 2.0;
@@ -930,7 +1164,8 @@ impl LayerStack {
                 let dist = (dx * dx + dy * dy).sqrt();
 
                 let vignette = 1.0 - strength * dist.powi(4);
-                let luminance = 0.299 * pixel[0] as f32 + 0.587 * pixel[1] as f32 + 0.114 * pixel[2] as f32;
+                let luminance =
+                    0.299 * pixel[0] as f32 + 0.587 * pixel[1] as f32 + 0.114 * pixel[2] as f32;
                 let halo = (luminance / 255.0 - 0.7).max(0.0) * halation * 0.4 * (1.0 - dist * 0.5);
 
                 for c in 0..3 {
@@ -943,8 +1178,18 @@ impl LayerStack {
         out
     }
 
-    fn apply_light_leak(&self, img: &RgbImage, intensity: f32, hue: f32, saturation: f32, lightness: f32, position: u8) -> RgbImage {
-        if intensity < 0.01 { return img.clone(); }
+    fn apply_light_leak(
+        &self,
+        img: &RgbImage,
+        intensity: f32,
+        hue: f32,
+        saturation: f32,
+        lightness: f32,
+        position: u8,
+    ) -> RgbImage {
+        if intensity < 0.01 {
+            return img.clone();
+        }
         let mut out = img.clone();
         let (w, h) = (img.width() as f32, img.height() as f32);
 
@@ -952,27 +1197,41 @@ impl LayerStack {
         let h_norm = hue / 360.0; // 归一化到 0-1
         let s = saturation;
         let l = lightness;
-        
+
         let (r, g, b) = if s == 0.0 {
             // 灰度
             (l, l, l)
         } else {
-            let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+            let q = if l < 0.5 {
+                l * (1.0 + s)
+            } else {
+                l + s - l * s
+            };
             let p = 2.0 * l - q;
-            
+
             let hue_to_rgb = |p: f32, q: f32, t: f32| -> f32 {
                 let mut t = t;
-                if t < 0.0 { t += 1.0; }
-                if t > 1.0 { t -= 1.0; }
-                if t < 1.0/6.0 { return p + (q - p) * 6.0 * t; }
-                if t < 1.0/2.0 { return q; }
-                if t < 2.0/3.0 { return p + (q - p) * (2.0/3.0 - t) * 6.0; }
+                if t < 0.0 {
+                    t += 1.0;
+                }
+                if t > 1.0 {
+                    t -= 1.0;
+                }
+                if t < 1.0 / 6.0 {
+                    return p + (q - p) * 6.0 * t;
+                }
+                if t < 1.0 / 2.0 {
+                    return q;
+                }
+                if t < 2.0 / 3.0 {
+                    return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+                }
                 p
             };
             (
-                hue_to_rgb(p, q, h_norm + 1.0/3.0),
+                hue_to_rgb(p, q, h_norm + 1.0 / 3.0),
                 hue_to_rgb(p, q, h_norm),
-                hue_to_rgb(p, q, h_norm - 1.0/3.0)
+                hue_to_rgb(p, q, h_norm - 1.0 / 3.0),
             )
         };
 
@@ -980,13 +1239,13 @@ impl LayerStack {
             for (x, _y, pixel) in row {
                 let fx = x as f32 / w;
                 let fy = y as f32 / h;
-                
+
                 // 根据位置计算漏光强度
                 let leak = match position {
-                    0 => (1.0 - fx).powi(2) * (1.0 - fy).powi(2),  // 左上
-                    1 => fx.powi(2) * (1.0 - fy).powi(2),          // 右上
-                    2 => (1.0 - fx).powi(2) * fy.powi(2),          // 左下
-                    3 => fx.powi(2) * fy.powi(2),                  // 右下
+                    0 => (1.0 - fx).powi(2) * (1.0 - fy).powi(2), // 左上
+                    1 => fx.powi(2) * (1.0 - fy).powi(2),         // 右上
+                    2 => (1.0 - fx).powi(2) * fy.powi(2),         // 左下
+                    3 => fx.powi(2) * fy.powi(2),                 // 右下
                     _ => (1.0 - fx).powi(2) * (1.0 - fy).max(fy).powi(2), // 四角（默认）
                 } * intensity;
 
@@ -1009,9 +1268,15 @@ impl LayerStack {
 
     fn apply_blur(&self, img: &RgbImage, motion: f32, dof: f32, swirl: f32) -> RgbImage {
         let mut out = img.clone();
-        if motion > 0.01 { out = apply_motion_blur(&out, motion); }
-        if dof > 0.01 { out = apply_dof_blur(&out, dof); }
-        if swirl > 0.01 { out = apply_swirl_blur(&out, swirl); }
+        if motion > 0.01 {
+            out = apply_motion_blur(&out, motion);
+        }
+        if dof > 0.01 {
+            out = apply_dof_blur(&out, dof);
+        }
+        if swirl > 0.01 {
+            out = apply_swirl_blur(&out, swirl);
+        }
         out
     }
 
@@ -1032,25 +1297,42 @@ impl LayerStack {
     //   7. 所有调整上限保守：不过度干预胶片的色彩倾向
     // ============================================================
 
-    fn apply_skin_hsl(&self, img: &RgbImage,
-        remove_yellow: f32, reduce_green: f32, add_pink: f32, add_red: f32,
-        skin_brightness: f32) -> RgbImage
-    {
+    fn apply_skin_hsl(
+        &self,
+        img: &RgbImage,
+        remove_yellow: f32,
+        reduce_green: f32,
+        add_pink: f32,
+        add_red: f32,
+        skin_brightness: f32,
+    ) -> RgbImage {
         let mut out = img.clone();
-        if remove_yellow < 1.0 && reduce_green < 1.0 && add_pink < 1.0
-            && add_red < 1.0 && skin_brightness.abs() < 0.5 { return out; }
+        if remove_yellow < 1.0
+            && reduce_green < 1.0
+            && add_pink < 1.0
+            && add_red < 1.0
+            && skin_brightness.abs() < 0.5
+        {
+            return out;
+        }
 
         // 所有参数范围 0~100，quad_boost 让中段柔和、末端可加浓
-        let boost = |v: f32| { let r = (v / 100.0).clamp(0.0, 1.0); quad_boost(r, 2.0).max(0.0) };
-        let abs_boost = |v: f32| { let r = (v / 100.0).clamp(-1.0, 1.0); quad_boost(r, 2.0) };
+        let boost = |v: f32| {
+            let r = (v / 100.0).clamp(0.0, 1.0);
+            quad_boost(r, 2.0).max(0.0)
+        };
+        let abs_boost = |v: f32| {
+            let r = (v / 100.0).clamp(-1.0, 1.0);
+            quad_boost(r, 2.0)
+        };
 
-        let sat_red   = boost(remove_yellow) * 0.20;    // 最大降饱和 20%
+        let sat_red = boost(remove_yellow) * 0.20; // 最大降饱和 20%
         let hue_shift = -abs_boost(remove_yellow) * 0.016; // 最大偏红 0.016
-        let grn_red   = boost(reduce_green) * 0.18;     // 最大降绿 18%
-        let pnk_r     = boost(add_pink) * 0.10;           // 加粉红通道 +10%
-        let pnk_b     = boost(add_pink) * 0.08;           // 加粉蓝通道 +8%
-        let red_boost = boost(add_red) * 0.08;           // 加红 +8%
-        let lum_adj   = abs_boost(skin_brightness) * 0.05; // 亮度 ±5%
+        let grn_red = boost(reduce_green) * 0.18; // 最大降绿 18%
+        let pnk_r = boost(add_pink) * 0.10; // 加粉红通道 +10%
+        let pnk_b = boost(add_pink) * 0.08; // 加粉蓝通道 +8%
+        let red_boost = boost(add_red) * 0.08; // 加红 +8%
+        let lum_adj = abs_boost(skin_brightness) * 0.05; // 亮度 ±5%
 
         for pixel in out.pixels_mut() {
             let r = pixel[0] as f32 / 255.0;
@@ -1059,7 +1341,9 @@ impl LayerStack {
             let (mut h, mut s, mut l) = rgb_to_hsl(r, g, b);
 
             let w_hue = hue_weight(h, 0.085, 0.04);
-            if w_hue < 0.005 { continue; }
+            if w_hue < 0.005 {
+                continue;
+            }
 
             let w_lum = if l < 0.15 {
                 (l - 0.03) / 0.12
@@ -1073,7 +1357,9 @@ impl LayerStack {
             let w_sat = (s * 3.5).min(1.0);
 
             let w = w_hue * w_lum * w_sat;
-            if w < 0.005 { continue; }
+            if w < 0.005 {
+                continue;
+            }
 
             // HSL adjustments (remove_yellow)
             h = (h + hue_shift * w + 1.0) % 1.0;
@@ -1115,27 +1401,38 @@ impl LayerStack {
     // ============================================================
 
     #[allow(clippy::too_many_arguments)]
-    fn apply_modern_tone(&self, img: &RgbImage,
-        _style_idx: u8, strength: f32,
-        shadow_lift: f32, highlight_compress: f32, midtone_contrast: f32,
-        shadow_hue: f32, shadow_sat: f32,
-        highlight_hue: f32, highlight_sat: f32,
-        sat_high_suppress: f32, warmth_shift: f32, fine_grain: f32) -> RgbImage
-    {
+    fn apply_modern_tone(
+        &self,
+        img: &RgbImage,
+        _style_idx: u8,
+        strength: f32,
+        shadow_lift: f32,
+        highlight_compress: f32,
+        midtone_contrast: f32,
+        shadow_hue: f32,
+        shadow_sat: f32,
+        highlight_hue: f32,
+        highlight_sat: f32,
+        sat_high_suppress: f32,
+        warmth_shift: f32,
+        fine_grain: f32,
+    ) -> RgbImage {
         let mut out = img.clone();
         let sf = (strength / 100.0).clamp(0.0, 1.5);
-        if sf < 0.01 { return out; }
+        if sf < 0.01 {
+            return out;
+        }
 
-        let sh_lift  = (shadow_lift  / 50.0).clamp(-1.0, 1.0) * sf;
-        let hl_comp  = (highlight_compress / 100.0).clamp(0.0, 1.0) * sf;
-        let mc_adj   = (midtone_contrast / 50.0).clamp(-1.0, 1.0) * sf;
-        let sh_h     = shadow_hue / 360.0;
-        let sh_sat   = (shadow_sat / 100.0).clamp(0.0, 0.5) * sf;
-        let hl_h     = highlight_hue / 360.0;
-        let hl_sat   = (highlight_sat / 100.0).clamp(0.0, 0.5) * sf;
-        let sat_sup  = (sat_high_suppress / 100.0).clamp(0.0, 0.6) * sf;
-        let warm     = (warmth_shift / 30.0).clamp(-1.0, 1.0) * sf;
-        let grain_amt= (fine_grain / 100.0).clamp(0.0, 0.5) * sf;
+        let sh_lift = (shadow_lift / 50.0).clamp(-1.0, 1.0) * sf;
+        let hl_comp = (highlight_compress / 100.0).clamp(0.0, 1.0) * sf;
+        let mc_adj = (midtone_contrast / 50.0).clamp(-1.0, 1.0) * sf;
+        let sh_h = shadow_hue / 360.0;
+        let sh_sat = (shadow_sat / 100.0).clamp(0.0, 0.5) * sf;
+        let hl_h = highlight_hue / 360.0;
+        let hl_sat = (highlight_sat / 100.0).clamp(0.0, 0.5) * sf;
+        let sat_sup = (sat_high_suppress / 100.0).clamp(0.0, 0.6) * sf;
+        let warm = (warmth_shift / 30.0).clamp(-1.0, 1.0) * sf;
+        let grain_amt = (fine_grain / 100.0).clamp(0.0, 0.5) * sf;
 
         let sh_cut = 0.35_f32;
         let hl_cut = 0.65_f32;
@@ -1157,26 +1454,52 @@ impl LayerStack {
             // Step3: 中间调对比度（HSL L 通道 gamma）
             if mc_adj.abs() > 0.001 && l > 0.15 && l < 0.85 {
                 let nl = (l - 0.15) / 0.7;
-                let gamma = if mc_adj > 0.0 { 1.0 + mc_adj * 0.4 } else { 1.0 / (1.0 - mc_adj * 0.35) };
+                let gamma = if mc_adj > 0.0 {
+                    1.0 + mc_adj * 0.4
+                } else {
+                    1.0 / (1.0 - mc_adj * 0.35)
+                };
                 l = 0.15 + nl.powf(1.0 / gamma) * 0.7;
             }
-            if !l.is_finite() { l = 0.5; }
+            if !l.is_finite() {
+                l = 0.5;
+            }
             l = l.clamp(0.01, 0.99);
 
             // Step4: 阴影/高光色偏 — smoothstep 实现自然过渡
             if sh_sat > 0.002 && l < sh_cut + 0.1 {
-                let t_raw = if l < sh_cut { 1.0 - l / sh_cut } else { (sh_cut + 0.1 - l) / 0.1 };
+                let t_raw = if l < sh_cut {
+                    1.0 - l / sh_cut
+                } else {
+                    (sh_cut + 0.1 - l) / 0.1
+                };
                 let w = smoothstep(t_raw.clamp(0.0, 1.0)) * sh_sat;
                 let dh = sh_h - h;
-                let dh_adj = if dh > 0.5 { dh - 1.0 } else if dh < -0.5 { dh + 1.0 } else { dh };
+                let dh_adj = if dh > 0.5 {
+                    dh - 1.0
+                } else if dh < -0.5 {
+                    dh + 1.0
+                } else {
+                    dh
+                };
                 h = (h + dh_adj * w + 1.0) % 1.0;
                 s = (s + w * 0.15).min(1.0);
             }
             if hl_sat > 0.002 && l > hl_cut - 0.1 {
-                let t_raw = if l > hl_cut { (l - hl_cut) / (1.0 - hl_cut) } else { (l - (hl_cut - 0.1)) / 0.1 };
+                let t_raw = if l > hl_cut {
+                    (l - hl_cut) / (1.0 - hl_cut)
+                } else {
+                    (l - (hl_cut - 0.1)) / 0.1
+                };
                 let w = smoothstep(t_raw.clamp(0.0, 1.0)) * hl_sat;
                 let dh = hl_h - h;
-                let dh_adj = if dh > 0.5 { dh - 1.0 } else if dh < -0.5 { dh + 1.0 } else { dh };
+                let dh_adj = if dh > 0.5 {
+                    dh - 1.0
+                } else if dh < -0.5 {
+                    dh + 1.0
+                } else {
+                    dh
+                };
                 h = (h + dh_adj * w + 1.0) % 1.0;
                 s = (s + w * 0.12).min(1.0);
             }
@@ -1202,7 +1525,9 @@ impl LayerStack {
             if grain_amt > 0.001 {
                 let grain_w = 1.0 - ((l - 0.5).abs() * 1.8);
                 let grain_w = grain_w.max(0.0);
-                let px = x.wrapping_mul(374761393).wrapping_add(y.wrapping_mul(668265263));
+                let px = x
+                    .wrapping_mul(374761393)
+                    .wrapping_add(y.wrapping_mul(668265263));
                 let local_seed = seed.wrapping_add(px);
                 let n = ((local_seed >> 8) as f32 / 16777216.0) - 0.5;
                 seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
@@ -1227,10 +1552,21 @@ impl LayerStack {
     // ============================================================
 
     #[allow(clippy::too_many_arguments)]
-    fn apply_split_tone(&self, img: &RgbImage, hh: f32, hs: f32, sh: f32, ss: f32, balance: f32, strength: f32) -> RgbImage {
+    fn apply_split_tone(
+        &self,
+        img: &RgbImage,
+        hh: f32,
+        hs: f32,
+        sh: f32,
+        ss: f32,
+        balance: f32,
+        strength: f32,
+    ) -> RgbImage {
         let mut out = img.clone();
         let str_factor = strength / 100.0;
-        if str_factor < 0.01 || (hs < 0.01 && ss < 0.01) { return out; }
+        if str_factor < 0.01 || (hs < 0.01 && ss < 0.01) {
+            return out;
+        }
 
         // 高光/阴影色相（归一化 0-1）和饱和度强度
         let h_h = hh;
@@ -1250,15 +1586,29 @@ impl LayerStack {
             let (h0, s0, l) = rgb_to_hsl(r, g, b);
 
             // smoothstep 权重：亮度越高越靠近高光，越低越靠近阴影
-            let hw = if l > mid { smoothstep(((l - mid) / (1.0 - mid)).clamp(0.0, 1.0)) } else { 0.0 };
-            let sw = if l < mid { smoothstep(((mid - l) / mid).clamp(0.0, 1.0)) } else { 0.0 };
+            let hw = if l > mid {
+                smoothstep(((l - mid) / (1.0 - mid)).clamp(0.0, 1.0))
+            } else {
+                0.0
+            };
+            let sw = if l < mid {
+                smoothstep(((mid - l) / mid).clamp(0.0, 1.0))
+            } else {
+                0.0
+            };
 
             let mut h = h0;
             let mut s = s0;
 
             if h_sat > 0.01 && hw > 0.01 {
                 let dh = h_h - h;
-                let dh_adj = if dh > 0.5 { dh - 1.0 } else if dh < -0.5 { dh + 1.0 } else { dh };
+                let dh_adj = if dh > 0.5 {
+                    dh - 1.0
+                } else if dh < -0.5 {
+                    dh + 1.0
+                } else {
+                    dh
+                };
                 let w = hw * h_sat * 0.5;
                 h = (h + dh_adj * w + 1.0) % 1.0;
                 s = (s + w * 0.20).min(1.0);
@@ -1266,7 +1616,13 @@ impl LayerStack {
 
             if s_sat > 0.01 && sw > 0.01 {
                 let dh = s_h - h;
-                let dh_adj = if dh > 0.5 { dh - 1.0 } else if dh < -0.5 { dh + 1.0 } else { dh };
+                let dh_adj = if dh > 0.5 {
+                    dh - 1.0
+                } else if dh < -0.5 {
+                    dh + 1.0
+                } else {
+                    dh
+                };
                 let w = sw * s_sat * 0.4;
                 h = (h + dh_adj * w + 1.0) % 1.0;
                 s = (s + w * 0.15).min(1.0);
@@ -1295,7 +1651,9 @@ impl LayerStack {
     // ============================================================
 
     fn apply_sharp(&self, img: &RgbImage, amount: f32, radius: f32) -> RgbImage {
-        if amount < 1.0 || radius < 0.3 { return img.clone(); }
+        if amount < 1.0 || radius < 0.3 {
+            return img.clone();
+        }
         let r = radius.round().max(1.0) as u32;
         let amt = (amount / 100.0).clamp(0.0, 2.0);
 
@@ -1315,16 +1673,35 @@ impl LayerStack {
 }
 
 /// 公共：肤色优化（不要 LayerStack 实例）
-pub fn apply_skin_hsl_standalone(img: &RgbImage,
-    remove_yellow: f32, reduce_green: f32, add_pink: f32, add_red: f32,
-    skin_brightness: f32) -> RgbImage
-{
+pub fn apply_skin_hsl_standalone(
+    img: &RgbImage,
+    remove_yellow: f32,
+    reduce_green: f32,
+    add_pink: f32,
+    add_red: f32,
+    skin_brightness: f32,
+) -> RgbImage {
     let stack = LayerStack::new();
-    stack.apply_skin_hsl(img, remove_yellow, reduce_green, add_pink, add_red, skin_brightness)
+    stack.apply_skin_hsl(
+        img,
+        remove_yellow,
+        reduce_green,
+        add_pink,
+        add_red,
+        skin_brightness,
+    )
 }
 
 /// 公共：色调分离（不要 LayerStack 实例）
-pub fn apply_split_tone_standalone(img: &RgbImage, hh: f32, hs: f32, sh: f32, ss: f32, balance: f32, strength: f32) -> RgbImage {
+pub fn apply_split_tone_standalone(
+    img: &RgbImage,
+    hh: f32,
+    hs: f32,
+    sh: f32,
+    ss: f32,
+    balance: f32,
+    strength: f32,
+) -> RgbImage {
     let stack = LayerStack::new();
     stack.apply_split_tone(img, hh, hs, sh, ss, balance, strength)
 }
@@ -1344,12 +1721,22 @@ pub struct UserPreset {
 }
 
 /// 保存当前图层栈为用户预设
-pub fn save_user_preset(name: &str, layers: &[Layer], presets_dir: &Path) -> Result<String, String> {
+pub fn save_user_preset(
+    name: &str,
+    layers: &[Layer],
+    presets_dir: &Path,
+) -> Result<String, String> {
     std::fs::create_dir_all(presets_dir).map_err(|e| e.to_string())?;
-    let sanitized: String = name.chars().filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-' || *c == '_').collect();
+    let sanitized: String = name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-' || *c == '_')
+        .collect();
     let fname = format!("{}.json", sanitized.trim());
     let path = presets_dir.join(&fname);
-    let preset = UserPreset { name: name.to_string(), layers: layers.to_vec() };
+    let preset = UserPreset {
+        name: name.to_string(),
+        layers: layers.to_vec(),
+    };
     let json = serde_json::to_string_pretty(&preset).map_err(|e| e.to_string())?;
     std::fs::write(&path, &json).map_err(|e| e.to_string())?;
     Ok(fname)
@@ -1377,7 +1764,10 @@ pub fn list_user_presets(presets_dir: &Path) -> Vec<UserPreset> {
 }
 
 pub fn delete_user_preset(name: &str, presets_dir: &Path) -> Result<(), String> {
-    let sanitized: String = name.chars().filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-' || *c == '_').collect();
+    let sanitized: String = name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-' || *c == '_')
+        .collect();
     let fname = format!("{}.json", sanitized.trim());
     let path = presets_dir.join(&fname);
     if path.exists() {

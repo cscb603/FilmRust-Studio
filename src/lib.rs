@@ -14,21 +14,26 @@ pub mod error;
 pub mod layers;
 
 pub use layers::{
-    Layer, LayerStack, LayerType, BlendMode, UserPreset,
-    apply_skin_hsl_standalone, apply_split_tone_standalone, apply_sharp_standalone,
-    save_user_preset, list_user_presets, delete_user_preset,
+    apply_sharp_standalone, apply_skin_hsl_standalone, apply_split_tone_standalone,
+    delete_user_preset, list_user_presets, save_user_preset, BlendMode, Layer, LayerStack,
+    LayerType, UserPreset,
 };
 pub mod presets;
 pub mod ps_jsx;
 
 pub use error::{FilmRustError, FilmRustResult};
-pub use presets::{FilmPreset, default_sim_config, find_filmr_stock, find_preset, get_all_filmr_stocks, get_all_presets};
-pub use ps_jsx::{JsxConfig, JsxGenerator, generate_jsx_for_preset};
+pub use presets::{
+    default_sim_config, find_filmr_stock, find_preset, get_all_filmr_stocks, get_all_presets,
+    FilmPreset,
+};
+pub use ps_jsx::{generate_jsx_for_preset, JsxConfig, JsxGenerator};
 
 /// 对 RGB 图像应用色调倾斜（绿←→品红）
 /// tint < 0 = 偏绿, tint > 0 = 偏品红
 pub fn apply_tint_to_rgb(img: &image::RgbImage, tint: f32) -> image::RgbImage {
-    if tint.abs() < 0.01 { return img.clone(); }
+    if tint.abs() < 0.01 {
+        return img.clone();
+    }
     let amount = tint * 0.12;
     let (rm, gm, bm) = if amount > 0.0 {
         (1.0 + amount, 1.0 - amount * 0.6, 1.0 + amount)
@@ -37,9 +42,12 @@ pub fn apply_tint_to_rgb(img: &image::RgbImage, tint: f32) -> image::RgbImage {
         (1.0 - a * 0.5, 1.0 + a, 1.0 - a * 0.5)
     };
     // 预计算 256-entry LUT，将逐像素浮点运算转为查找表
-    let lut_r: [u8; 256] = std::array::from_fn(|v| ((v as f32 / 255.0 * rm).clamp(0.0, 1.0) * 255.0) as u8);
-    let lut_g: [u8; 256] = std::array::from_fn(|v| ((v as f32 / 255.0 * gm).clamp(0.0, 1.0) * 255.0) as u8);
-    let lut_b: [u8; 256] = std::array::from_fn(|v| ((v as f32 / 255.0 * bm).clamp(0.0, 1.0) * 255.0) as u8);
+    let lut_r: [u8; 256] =
+        std::array::from_fn(|v| ((v as f32 / 255.0 * rm).clamp(0.0, 1.0) * 255.0) as u8);
+    let lut_g: [u8; 256] =
+        std::array::from_fn(|v| ((v as f32 / 255.0 * gm).clamp(0.0, 1.0) * 255.0) as u8);
+    let lut_b: [u8; 256] =
+        std::array::from_fn(|v| ((v as f32 / 255.0 * bm).clamp(0.0, 1.0) * 255.0) as u8);
     let mut out = img.clone();
     for pixel in out.pixels_mut() {
         pixel[0] = lut_r[pixel[0] as usize];
@@ -82,18 +90,24 @@ pub fn process_file(
     let stock = find_filmr_stock(preset_query)?;
 
     // 读取图像
-    let img = image::open(input_path)
-        .map_err(|e| error::anyhow_err!("无法读取图像: {} ({} 是不是受支持的格式?)", e,
-            input_path.extension()
+    let img = image::open(input_path).map_err(|e| {
+        error::anyhow_err!(
+            "无法读取图像: {} ({} 是不是受支持的格式?)",
+            e,
+            input_path
+                .extension()
                 .and_then(|s| s.to_str())
-                .unwrap_or("unknown")))?;
+                .unwrap_or("unknown")
+        )
+    })?;
     let rgb = img.to_rgb8();
 
     // 应用效果
     let result = apply_film(&rgb, &stock, config)?;
 
     // 保存
-    result.save(output_path)
+    result
+        .save(output_path)
         .map_err(|e| error::anyhow_err!("保存图像失败: {}", e))?;
 
     Ok(())

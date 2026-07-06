@@ -4,21 +4,24 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, mpsc};
-use std::time::Instant;
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::{mpsc, Arc};
+use std::time::Instant;
 
 use eframe::egui::{self, Ui};
-use egui::{vec2, pos2, Color32, ColorImage, CornerRadius, Frame, CentralPanel, IconData, Window};
-use image::{DynamicImage, RgbImage};
+use egui::{pos2, vec2, CentralPanel, Color32, ColorImage, CornerRadius, Frame, IconData, Window};
 use image::codecs::jpeg::JpegEncoder;
+use image::{DynamicImage, RgbImage};
 use rfd::FileDialog;
 
-use filmrust::layers::{BlendMode, Layer, LayerStack, LayerType, UserPreset, catmull_rom_curve, save_user_preset, list_user_presets, delete_user_preset};
+use filmr::SimulationConfig;
+use filmrust::layers::{
+    catmull_rom_curve, delete_user_preset, list_user_presets, save_user_preset, BlendMode, Layer,
+    LayerStack, LayerType, UserPreset,
+};
 use filmrust::presets::{get_all_presets, FilmPreset};
 use filmrust::{apply_film, find_filmr_stock};
-use filmr::SimulationConfig;
 
 const WATERMARK: &str = "FilmRust Studio Pro v7.3";
 
@@ -26,14 +29,12 @@ const WATERMARK: &str = "FilmRust Studio Pro v7.3";
 /// 使用 raw_arg 保证 /select, 语法正确，避免重复打开窗口
 #[cfg(target_os = "windows")]
 fn open_folder_and_select(file_path: &Path) {
-    use std::process::Command;
     use std::os::windows::process::CommandExt;
+    use std::process::Command;
     // 使用 raw_arg 构造精确的命令行：/select,"path"
     // 避免 args() 额外加引号导致 explorer 不识别 /select, 语法
     let cmdline = format!("/select,\"{}\"", file_path.display());
-    let _ = Command::new("explorer")
-        .raw_arg(&cmdline)
-        .spawn();
+    let _ = Command::new("explorer").raw_arg(&cmdline).spawn();
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -54,7 +55,11 @@ fn load_app_icon() -> IconData {
         Ok(img) => {
             let rgba = img.to_rgba8();
             let (w, h) = rgba.dimensions();
-            IconData { rgba: rgba.into_raw(), width: w, height: h }
+            IconData {
+                rgba: rgba.into_raw(),
+                width: w,
+                height: h,
+            }
         }
         Err(_) => IconData::default(),
     }
@@ -67,17 +72,32 @@ fn setup_chinese_fonts(ctx: &egui::Context) {
         "/System/Library/Fonts/STHeiti Medium.ttc",
         "/System/Library/Fonts/STHeiti Light.ttc",
         "/System/Library/Fonts/Hiragino Sans GB.ttc",
-        r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\msyh.ttf",
-        r"C:\Windows\Fonts\msyhl.ttc", r"C:\Windows\Fonts\simhei.ttf",
+        r"C:\Windows\Fonts\msyh.ttc",
+        r"C:\Windows\Fonts\msyh.ttf",
+        r"C:\Windows\Fonts\msyhl.ttc",
+        r"C:\Windows\Fonts\simhei.ttf",
         r"C:\Windows\Fonts\simsun.ttc",
     ];
     for path in &candidates {
         if let Ok(data) = std::fs::read(path) {
-            fonts.font_data.insert("chinese".into(), Arc::new(
-                egui::FontData::from_owned(data).tweak(egui::FontTweak { scale: 1.0, y_offset_factor: -0.05, ..Default::default() })
-            ));
-            fonts.families.entry(egui::FontFamily::Proportional).or_default().insert(0, "chinese".into());
-            fonts.families.entry(egui::FontFamily::Monospace).or_default().insert(0, "chinese".into());
+            fonts.font_data.insert(
+                "chinese".into(),
+                Arc::new(egui::FontData::from_owned(data).tweak(egui::FontTweak {
+                    scale: 1.0,
+                    y_offset_factor: -0.05,
+                    ..Default::default()
+                })),
+            );
+            fonts
+                .families
+                .entry(egui::FontFamily::Proportional)
+                .or_default()
+                .insert(0, "chinese".into());
+            fonts
+                .families
+                .entry(egui::FontFamily::Monospace)
+                .or_default()
+                .insert(0, "chinese".into());
             break;
         }
     }
@@ -86,14 +106,39 @@ fn setup_chinese_fonts(ctx: &egui::Context) {
 
 fn tone_color(preset: &FilmPreset) -> Color32 {
     let lower = preset.name.to_lowercase();
-    if lower.contains("portra")||lower.contains("gold")||lower.contains("kodachrome")||lower.contains("solaris")||lower.contains("vista")||lower.contains("optima") {Color32::from_rgb(220,160,80)}
-    else if lower.contains("superia")||lower.contains("fujicolor")||lower.contains("cinestill 800t")||lower.contains("provia")||lower.contains("gr street") {Color32::from_rgb(80,160,220)}
-    else if lower.contains("velvia")||lower.contains("ektar")||lower.contains("ektachrome") {Color32::from_rgb(200,80,160)}
-    else if lower.contains("tri-x")||lower.contains("hp5")||lower.contains("fp4")||lower.contains("delta")||lower.contains("neopan")||lower.contains("pan")||lower.contains("apx")||lower.contains("orwo") {Color32::from_rgb(140,140,140)}
-    else if lower.contains("lomo")||lower.contains("polaroid") {Color32::from_rgb(180,120,200)}
-    else {Color32::from_rgb(120,160,120)}
+    if lower.contains("portra")
+        || lower.contains("gold")
+        || lower.contains("kodachrome")
+        || lower.contains("solaris")
+        || lower.contains("vista")
+        || lower.contains("optima")
+    {
+        Color32::from_rgb(220, 160, 80)
+    } else if lower.contains("superia")
+        || lower.contains("fujicolor")
+        || lower.contains("cinestill 800t")
+        || lower.contains("provia")
+        || lower.contains("gr street")
+    {
+        Color32::from_rgb(80, 160, 220)
+    } else if lower.contains("velvia") || lower.contains("ektar") || lower.contains("ektachrome") {
+        Color32::from_rgb(200, 80, 160)
+    } else if lower.contains("tri-x")
+        || lower.contains("hp5")
+        || lower.contains("fp4")
+        || lower.contains("delta")
+        || lower.contains("neopan")
+        || lower.contains("pan")
+        || lower.contains("apx")
+        || lower.contains("orwo")
+    {
+        Color32::from_rgb(140, 140, 140)
+    } else if lower.contains("lomo") || lower.contains("polaroid") {
+        Color32::from_rgb(180, 120, 200)
+    } else {
+        Color32::from_rgb(120, 160, 120)
+    }
 }
-
 
 fn film_usage_desc(key: &str) -> &'static str {
     let lower = key.to_lowercase();
@@ -220,62 +265,90 @@ fn film_usage_desc(key: &str) -> &'static str {
 
 fn tone_label(p: &FilmPreset) -> &'static str {
     let s = p.name.to_lowercase();
-    if s.contains("portra")||s.contains("gold")||s.contains("kodachrome") {"暖色调"}
-    else if s.contains("superia")||s.contains("fujicolor") {"冷调·青绿"}
-    else if s.contains("cinestill 800t") {"冷调·蓝钨丝"}
-    else if s.contains("velvia") {"高饱和·绿"}
-    else if s.contains("ektar") {"高饱和·暖"}
-    else if s.contains("ektachrome") {"正片·冷"}
-    else if s.contains("provia") {"正片·中性"}
-    else if s.contains("tri-x")||s.contains("hp5") {"黑白·高反差"}
-    else if s.contains("fp4")||s.contains("delta")||s.contains("pan"){"黑白·细颗粒"}
-    else if s.contains("solaris")||s.contains("vista"){"暖调·复古"}
-    else if s.contains("lomo") {"创意·Lomo"}
-    else if s.contains("polaroid") {"暖调·拍立得"}
-    else {"中性"}
+    if s.contains("portra") || s.contains("gold") || s.contains("kodachrome") {
+        "暖色调"
+    } else if s.contains("superia") || s.contains("fujicolor") {
+        "冷调·青绿"
+    } else if s.contains("cinestill 800t") {
+        "冷调·蓝钨丝"
+    } else if s.contains("velvia") {
+        "高饱和·绿"
+    } else if s.contains("ektar") {
+        "高饱和·暖"
+    } else if s.contains("ektachrome") {
+        "正片·冷"
+    } else if s.contains("provia") {
+        "正片·中性"
+    } else if s.contains("tri-x") || s.contains("hp5") {
+        "黑白·高反差"
+    } else if s.contains("fp4") || s.contains("delta") || s.contains("pan") {
+        "黑白·细颗粒"
+    } else if s.contains("solaris") || s.contains("vista") {
+        "暖调·复古"
+    } else if s.contains("lomo") {
+        "创意·Lomo"
+    } else if s.contains("polaroid") {
+        "暖调·拍立得"
+    } else {
+        "中性"
+    }
 }
 
 fn layer_tag(lt: &LayerType) -> &'static str {
     match lt {
-        LayerType::FilmBase{..}=>"[胶片]",
-        LayerType::Color{..}=>"[色彩]",
-        LayerType::Curves{..}=>"[曲线]",
-        LayerType::SkinHsl{..}=>"[肤色]",
-        LayerType::ModernTone{..}=>"[现代]",
-        LayerType::SplitTone{..}=>"[色调]",
-        LayerType::Sharp{..}=>"[锐化]",
-        LayerType::Grain{..}=>"[颗粒]",
-        LayerType::Vignette{..}=>"[暗角]",
-        LayerType::LightLeak{..}=>"[漏光]",
-        _ => "[--]",  // 兼容旧版 Blur 层
+        LayerType::FilmBase { .. } => "[胶片]",
+        LayerType::Color { .. } => "[色彩]",
+        LayerType::Curves { .. } => "[曲线]",
+        LayerType::SkinHsl { .. } => "[肤色]",
+        LayerType::ModernTone { .. } => "[现代]",
+        LayerType::SplitTone { .. } => "[色调]",
+        LayerType::Sharp { .. } => "[锐化]",
+        LayerType::Grain { .. } => "[颗粒]",
+        LayerType::Vignette { .. } => "[暗角]",
+        LayerType::LightLeak { .. } => "[漏光]",
+        _ => "[--]", // 兼容旧版 Blur 层
     }
 }
 
 // ============================================================
 struct FilmRustPro {
-    files: Vec<PathBuf>, selected_idx: usize,
+    files: Vec<PathBuf>,
+    selected_idx: usize,
     last_dir: Option<PathBuf>,
     original_img: Option<DynamicImage>,
-    original_tex: Option<egui::TextureHandle>, processed_tex: Option<egui::TextureHandle>,
-    display_img_w: u32, display_img_h: u32,
-    is_processing: bool, has_processed: bool,
+    original_tex: Option<egui::TextureHandle>,
+    processed_tex: Option<egui::TextureHandle>,
+    display_img_w: u32,
+    display_img_h: u32,
+    is_processing: bool,
+    has_processed: bool,
     proc_result_rx: Option<mpsc::Receiver<ProcessResult>>,
-    animating: bool, anim_start: Instant, anim_duration: f32,
-    anim_src: Option<image::RgbaImage>, anim_dst: Option<image::RgbaImage>,
-    processed_base: Option<RgbImage>,           // 后处理合成结果（预览用）
-    cached_filmr_base: Option<RgbImage>,        // filmr 物理模拟缓存（原图尺寸，导出用）
-    preview_cache: Option<RgbImage>,            // 预览缩略图缓存（固定1600px，滑块响应快）
-    presets: Vec<FilmPreset>, style_idx: usize,
-    layers: LayerStack, selected_layer: Option<usize>,
-    status: String, status_ok: bool,
+    animating: bool,
+    anim_start: Instant,
+    anim_duration: f32,
+    anim_src: Option<image::RgbaImage>,
+    anim_dst: Option<image::RgbaImage>,
+    processed_base: Option<RgbImage>,    // 后处理合成结果（预览用）
+    cached_filmr_base: Option<RgbImage>, // filmr 物理模拟缓存（原图尺寸，导出用）
+    preview_cache: Option<RgbImage>,     // 预览缩略图缓存（固定1600px，滑块响应快）
+    presets: Vec<FilmPreset>,
+    style_idx: usize,
+    layers: LayerStack,
+    selected_layer: Option<usize>,
+    status: String,
+    status_ok: bool,
     dark_mode: bool,
     manually_toggled: bool,
-    show_curves_overlay: bool, curve_drag: Option<usize>, curve_cx: [f32; 3],
-    comparison_mode: bool, split_pos: f32,
-    zoom: f32, pan: [f32; 2],
-    layer_panel_split: f32,       // 右侧面板：图层列表占比 0.0~1.0
-    dragging_divider: bool,       // 是否正在拖拽分隔条
-    dirty_post: bool,             // post 层参数已修改，待合成
+    show_curves_overlay: bool,
+    curve_drag: Option<usize>,
+    curve_cx: [f32; 3],
+    comparison_mode: bool,
+    split_pos: f32,
+    zoom: f32,
+    pan: [f32; 2],
+    layer_panel_split: f32,               // 右侧面板：图层列表占比 0.0~1.0
+    dragging_divider: bool,               // 是否正在拖拽分隔条
+    dirty_post: bool,                     // post 层参数已修改，待合成
     last_slider_release: Option<Instant>, // 最后滑块松手时间（用于延迟更新）
     opened_folders: HashSet<PathBuf>,     // 已打开过资源管理器的文件夹（防重复弹出）
     global_strength: f32,                 // 整体效果强度 0~100%
@@ -284,75 +357,262 @@ struct FilmRustPro {
     preset_name_input: String,            // 预设名称输入框文本
 }
 
-struct ProcessResult { ok: bool, image: Option<DynamicImage>, error: Option<String> }
+struct ProcessResult {
+    ok: bool,
+    image: Option<DynamicImage>,
+    error: Option<String>,
+}
 
 impl FilmRustPro {
     fn guide_msg(&self) -> &'static str {
-        if self.files.is_empty() { "拖拽图片到窗口任意位置，或点「打开文件」开始" }
-        else if self.original_img.is_none() { "点击图片列表切换照片" }
-        else if !self.has_processed && !self.is_processing { "左侧选好胶片风格 → 右侧调整参数 → 点「开始显影」预览效果" }
-        else if self.is_processing { "正在显影中，请稍候..." }
-        else if self.has_processed { "可继续调参数重新显影，或点「导出」保存到本地" }
-        else { "就绪" }
+        if self.files.is_empty() {
+            "拖拽图片到窗口任意位置，或点「打开文件」开始"
+        } else if self.original_img.is_none() {
+            "点击图片列表切换照片"
+        } else if !self.has_processed && !self.is_processing {
+            "左侧选好胶片风格 → 右侧调整参数 → 点「开始显影」预览效果"
+        } else if self.is_processing {
+            "正在显影中，请稍候..."
+        } else if self.has_processed {
+            "可继续调参数重新显影，或点「导出」保存到本地"
+        } else {
+            "就绪"
+        }
     }
 
-    fn bg_top(&self) -> Color32 { if self.dark_mode {Color32::from_rgb(28,32,38)} else {Color32::from_rgb(240,240,245)} }
-    fn bg_bottom(&self) -> Color32 { if self.dark_mode {Color32::from_rgb(22,26,32)} else {Color32::from_rgb(230,230,238)} }
-    fn bg_panel(&self) -> Color32 { if self.dark_mode {Color32::from_rgb(24,28,34)} else {Color32::from_rgb(245,245,250)} }
-    fn bg_center(&self) -> Color32 { if self.dark_mode {Color32::from_rgb(18,20,26)} else {Color32::from_rgb(250,250,252)} }
-    fn bg_layer(&self) -> Color32 { if self.dark_mode {Color32::from_rgb(32,36,42)} else {Color32::from_rgb(235,238,242)} }
-    fn bg_layer_sel(&self) -> Color32 { if self.dark_mode {Color32::from_rgb(50,60,70)} else {Color32::from_rgb(200,210,225)} }
-    fn text_accent(&self) -> Color32 { if self.dark_mode {Color32::from_rgb(200,180,140)} else {Color32::from_rgb(140,100,40)} }
-    fn text_primary(&self) -> Color32 { if self.dark_mode {Color32::from_rgb(220,220,225)} else {Color32::from_rgb(30,30,35)} }
-    fn text_ok(&self) -> Color32 { if self.dark_mode {Color32::from_rgb(140,200,140)} else {Color32::from_rgb(40,140,40)} }
-    fn text_err(&self) -> Color32 { if self.dark_mode {Color32::from_rgb(240,140,140)} else {Color32::from_rgb(200,40,40)} }
-    fn text_dim(&self) -> Color32 { if self.dark_mode {Color32::from_rgb(140,150,160)} else {Color32::from_rgb(120,120,130)} }
+    fn bg_top(&self) -> Color32 {
+        if self.dark_mode {
+            Color32::from_rgb(28, 32, 38)
+        } else {
+            Color32::from_rgb(240, 240, 245)
+        }
+    }
+    fn bg_bottom(&self) -> Color32 {
+        if self.dark_mode {
+            Color32::from_rgb(22, 26, 32)
+        } else {
+            Color32::from_rgb(230, 230, 238)
+        }
+    }
+    fn bg_panel(&self) -> Color32 {
+        if self.dark_mode {
+            Color32::from_rgb(24, 28, 34)
+        } else {
+            Color32::from_rgb(245, 245, 250)
+        }
+    }
+    fn bg_center(&self) -> Color32 {
+        if self.dark_mode {
+            Color32::from_rgb(18, 20, 26)
+        } else {
+            Color32::from_rgb(250, 250, 252)
+        }
+    }
+    fn bg_layer(&self) -> Color32 {
+        if self.dark_mode {
+            Color32::from_rgb(32, 36, 42)
+        } else {
+            Color32::from_rgb(235, 238, 242)
+        }
+    }
+    fn bg_layer_sel(&self) -> Color32 {
+        if self.dark_mode {
+            Color32::from_rgb(50, 60, 70)
+        } else {
+            Color32::from_rgb(200, 210, 225)
+        }
+    }
+    fn text_accent(&self) -> Color32 {
+        if self.dark_mode {
+            Color32::from_rgb(200, 180, 140)
+        } else {
+            Color32::from_rgb(140, 100, 40)
+        }
+    }
+    fn text_primary(&self) -> Color32 {
+        if self.dark_mode {
+            Color32::from_rgb(220, 220, 225)
+        } else {
+            Color32::from_rgb(30, 30, 35)
+        }
+    }
+    fn text_ok(&self) -> Color32 {
+        if self.dark_mode {
+            Color32::from_rgb(140, 200, 140)
+        } else {
+            Color32::from_rgb(40, 140, 40)
+        }
+    }
+    fn text_err(&self) -> Color32 {
+        if self.dark_mode {
+            Color32::from_rgb(240, 140, 140)
+        } else {
+            Color32::from_rgb(200, 40, 40)
+        }
+    }
+    fn text_dim(&self) -> Color32 {
+        if self.dark_mode {
+            Color32::from_rgb(140, 150, 160)
+        } else {
+            Color32::from_rgb(120, 120, 130)
+        }
+    }
 
     fn new(_cc: &eframe::CreationContext) -> Self {
         let presets = get_all_presets();
         let sid = presets.first().map(|p| p.id.clone()).unwrap_or_default();
-        let (def_w, def_t, def_s) = presets.first().map(|p| (p.default_warmth, p.default_tint, p.default_saturation)).unwrap_or((0.0, 0.0, 1.0));
+        let (def_w, def_t, def_s) = presets
+            .first()
+            .map(|p| (p.default_warmth, p.default_tint, p.default_saturation))
+            .unwrap_or((0.0, 0.0, 1.0));
         let mut layers = LayerStack::new();
-        layers.add(Layer::new("胶片基底".into(), LayerType::FilmBase { stock_id: sid, strength: 100.0, grain: 100.0, auto_levels: true }));
-        layers.add(Layer::new("色彩".into(), LayerType::Color { warmth: def_w, tint: def_t, saturation: def_s }));
-        layers.add(Layer::new("曲线".into(), LayerType::Curves { contrast: 0.0, highlights: 0.0, shadows: 0.0 }));
-        layers.add(Layer::new("肤色优化".into(), LayerType::SkinHsl {
-            enabled: false, remove_yellow: 0.0, reduce_green: 0.0,
-            add_pink: 0.0, add_red: 0.0, skin_brightness: 0.0 }));
-        layers.add(Layer::new("现代色调".into(), LayerType::ModernTone {
-            enabled: false, style_idx: 0, strength: 100.0,
-            shadow_lift: 12.0, highlight_compress: 18.0, midtone_contrast: -8.0,
-            shadow_hue: 210.0, shadow_sat: 6.0,
-            highlight_hue: 40.0, highlight_sat: 4.0,
-            sat_high_suppress: 20.0, warmth_shift: 3.0, fine_grain: 12.0 }));
-        layers.add(Layer::new("色调分离".into(), LayerType::SplitTone {
-            enabled: false, highlight_hue: 0.0, highlight_saturation: 0.0,
-            shadow_hue: 0.0, shadow_saturation: 0.0, balance: 0.0, strength: 0.0 }));
-        layers.add(Layer::new("输出锐化".into(), LayerType::Sharp {
-            enabled: false, amount: 0.0, radius: 1.0, auto_radius: true }));
+        layers.add(Layer::new(
+            "胶片基底".into(),
+            LayerType::FilmBase {
+                stock_id: sid,
+                strength: 100.0,
+                grain: 100.0,
+                auto_levels: true,
+            },
+        ));
+        layers.add(Layer::new(
+            "色彩".into(),
+            LayerType::Color {
+                warmth: def_w,
+                tint: def_t,
+                saturation: def_s,
+            },
+        ));
+        layers.add(Layer::new(
+            "曲线".into(),
+            LayerType::Curves {
+                contrast: 0.0,
+                highlights: 0.0,
+                shadows: 0.0,
+            },
+        ));
+        layers.add(Layer::new(
+            "肤色优化".into(),
+            LayerType::SkinHsl {
+                enabled: false,
+                remove_yellow: 0.0,
+                reduce_green: 0.0,
+                add_pink: 0.0,
+                add_red: 0.0,
+                skin_brightness: 0.0,
+            },
+        ));
+        layers.add(Layer::new(
+            "现代色调".into(),
+            LayerType::ModernTone {
+                enabled: false,
+                style_idx: 0,
+                strength: 100.0,
+                shadow_lift: 12.0,
+                highlight_compress: 18.0,
+                midtone_contrast: -8.0,
+                shadow_hue: 210.0,
+                shadow_sat: 6.0,
+                highlight_hue: 40.0,
+                highlight_sat: 4.0,
+                sat_high_suppress: 20.0,
+                warmth_shift: 3.0,
+                fine_grain: 12.0,
+            },
+        ));
+        layers.add(Layer::new(
+            "色调分离".into(),
+            LayerType::SplitTone {
+                enabled: false,
+                highlight_hue: 0.0,
+                highlight_saturation: 0.0,
+                shadow_hue: 0.0,
+                shadow_saturation: 0.0,
+                balance: 0.0,
+                strength: 0.0,
+            },
+        ));
+        layers.add(Layer::new(
+            "输出锐化".into(),
+            LayerType::Sharp {
+                enabled: false,
+                amount: 0.0,
+                radius: 1.0,
+                auto_radius: true,
+            },
+        ));
         // 后处理创意层（独立于 filmr 物理管线）
-        layers.add(Layer::new("颗粒".into(), LayerType::Grain { amount: 0.0, size: 0.5 }));
-        layers.add(Layer::new("暗角".into(), LayerType::Vignette { strength: 0.0, halation: 0.0 }));
-        layers.add(Layer::new("漏光".into(), LayerType::LightLeak { intensity: 0.0, hue: 30.0, saturation: 0.8, lightness: 0.5, position: 4 }));
+        layers.add(Layer::new(
+            "颗粒".into(),
+            LayerType::Grain {
+                amount: 0.0,
+                size: 0.5,
+            },
+        ));
+        layers.add(Layer::new(
+            "暗角".into(),
+            LayerType::Vignette {
+                strength: 0.0,
+                halation: 0.0,
+            },
+        ));
+        layers.add(Layer::new(
+            "漏光".into(),
+            LayerType::LightLeak {
+                intensity: 0.0,
+                hue: 30.0,
+                saturation: 0.8,
+                lightness: 0.5,
+                position: 4,
+            },
+        ));
         let mut app = Self {
-            files: vec![], selected_idx: 0, last_dir: None,
-            original_img: None, original_tex: None, processed_tex: None,
-            display_img_w:0, display_img_h:0, is_processing:false, has_processed:false,
-            proc_result_rx:None, animating:false, anim_start:Instant::now(), anim_duration:1.5,
-            anim_src:None, anim_dst:None, processed_base:None, cached_filmr_base:None,
+            files: vec![],
+            selected_idx: 0,
+            last_dir: None,
+            original_img: None,
+            original_tex: None,
+            processed_tex: None,
+            display_img_w: 0,
+            display_img_h: 0,
+            is_processing: false,
+            has_processed: false,
+            proc_result_rx: None,
+            animating: false,
+            anim_start: Instant::now(),
+            anim_duration: 1.5,
+            anim_src: None,
+            anim_dst: None,
+            processed_base: None,
+            cached_filmr_base: None,
             preview_cache: None,
-            presets, style_idx:0, layers, selected_layer:Some(0),
-            status:"就绪".into(), status_ok:true, dark_mode:true, manually_toggled:false,
-            show_curves_overlay:false, curve_drag:None, curve_cx:[0.25,0.5,0.75],
-            comparison_mode:false, split_pos:0.5,
-            zoom:1.0, pan:[0.0,0.0],
-            layer_panel_split:0.45, dragging_divider:false,
+            presets,
+            style_idx: 0,
+            layers,
+            selected_layer: Some(0),
+            status: "就绪".into(),
+            status_ok: true,
+            dark_mode: true,
+            manually_toggled: false,
+            show_curves_overlay: false,
+            curve_drag: None,
+            curve_cx: [0.25, 0.5, 0.75],
+            comparison_mode: false,
+            split_pos: 0.5,
+            zoom: 1.0,
+            pan: [0.0, 0.0],
+            layer_panel_split: 0.45,
+            dragging_divider: false,
             dirty_post: false,
             last_slider_release: None,
             opened_folders: HashSet::new(),
             global_strength: 100.0,
             presets_dir: {
-                let dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| PathBuf::from(".")).join("presets_user");
+                let dir = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join("presets_user");
                 let _ = std::fs::create_dir_all(&dir);
                 dir
             },
@@ -363,8 +623,15 @@ impl FilmRustPro {
         app
     }
 
-    fn current_preset(&self) -> Option<&FilmPreset> { self.presets.get(self.style_idx) }
-    fn film_base(&self) -> Option<&Layer> { self.layers.layers.iter().find(|l| matches!(l.layer_type, LayerType::FilmBase{..})) }
+    fn current_preset(&self) -> Option<&FilmPreset> {
+        self.presets.get(self.style_idx)
+    }
+    fn film_base(&self) -> Option<&Layer> {
+        self.layers
+            .layers
+            .iter()
+            .find(|l| matches!(l.layer_type, LayerType::FilmBase { .. }))
+    }
 
     /// 预加载用户预设列表
     fn init_user_presets(&mut self) {
@@ -375,36 +642,84 @@ impl FilmRustPro {
     fn set_preset_index(&mut self, idx: usize) {
         self.style_idx = idx;
         if let Some(p) = self.presets.get(idx) {
-            if let Some(l) = self.layers.layers.iter_mut().find(|l| matches!(l.layer_type, LayerType::FilmBase{..})) {
-                if let LayerType::FilmBase{stock_id,..} = &mut l.layer_type { *stock_id = p.id.clone(); }
+            if let Some(l) = self
+                .layers
+                .layers
+                .iter_mut()
+                .find(|l| matches!(l.layer_type, LayerType::FilmBase { .. }))
+            {
+                if let LayerType::FilmBase { stock_id, .. } = &mut l.layer_type {
+                    *stock_id = p.id.clone();
+                }
             }
             for l in &mut self.layers.layers {
                 match &mut l.layer_type {
-                    LayerType::Color{ warmth, tint, saturation } => {
+                    LayerType::Color {
+                        warmth,
+                        tint,
+                        saturation,
+                    } => {
                         *warmth = p.default_warmth;
                         *tint = p.default_tint;
                         *saturation = p.default_saturation;
                     }
-                    LayerType::SkinHsl { enabled, remove_yellow, reduce_green, add_pink, add_red, skin_brightness } => {
-                        *enabled = p.skin_remove_yellow > 5.0 || p.skin_brightness.abs() > 0.5
-                            || p.skin_reduce_green > 5.0 || p.skin_add_pink > 5.0 || p.skin_add_red > 5.0;
+                    LayerType::SkinHsl {
+                        enabled,
+                        remove_yellow,
+                        reduce_green,
+                        add_pink,
+                        add_red,
+                        skin_brightness,
+                    } => {
+                        *enabled = p.skin_remove_yellow > 5.0
+                            || p.skin_brightness.abs() > 0.5
+                            || p.skin_reduce_green > 5.0
+                            || p.skin_add_pink > 5.0
+                            || p.skin_add_red > 5.0;
                         *remove_yellow = p.skin_remove_yellow;
                         *reduce_green = p.skin_reduce_green;
                         *add_pink = p.skin_add_pink;
                         *add_red = p.skin_add_red;
                         *skin_brightness = p.skin_brightness;
                     }
-                    LayerType::ModernTone { enabled, style_idx, strength, shadow_lift, highlight_compress,
-                        midtone_contrast, shadow_hue, shadow_sat, highlight_hue, highlight_sat,
-                        sat_high_suppress, warmth_shift, fine_grain } => {
-                        *style_idx = 0; *strength = 100.0;
-                        *shadow_lift = 12.0; *highlight_compress = 18.0; *midtone_contrast = -8.0;
-                        *shadow_hue = 210.0; *shadow_sat = 6.0;
-                        *highlight_hue = 40.0; *highlight_sat = 4.0;
-                        *sat_high_suppress = 20.0; *warmth_shift = 3.0; *fine_grain = 12.0;
+                    LayerType::ModernTone {
+                        enabled,
+                        style_idx,
+                        strength,
+                        shadow_lift,
+                        highlight_compress,
+                        midtone_contrast,
+                        shadow_hue,
+                        shadow_sat,
+                        highlight_hue,
+                        highlight_sat,
+                        sat_high_suppress,
+                        warmth_shift,
+                        fine_grain,
+                    } => {
+                        *style_idx = 0;
+                        *strength = 100.0;
+                        *shadow_lift = 12.0;
+                        *highlight_compress = 18.0;
+                        *midtone_contrast = -8.0;
+                        *shadow_hue = 210.0;
+                        *shadow_sat = 6.0;
+                        *highlight_hue = 40.0;
+                        *highlight_sat = 4.0;
+                        *sat_high_suppress = 20.0;
+                        *warmth_shift = 3.0;
+                        *fine_grain = 12.0;
                         let _ = enabled;
                     }
-                    LayerType::SplitTone { enabled, highlight_hue, highlight_saturation, shadow_hue, shadow_saturation, balance, strength } => {
+                    LayerType::SplitTone {
+                        enabled,
+                        highlight_hue,
+                        highlight_saturation,
+                        shadow_hue,
+                        shadow_saturation,
+                        balance,
+                        strength,
+                    } => {
                         *enabled = p.split_strength > 5.0;
                         *highlight_hue = p.split_hh;
                         *highlight_saturation = p.split_hs;
@@ -424,8 +739,16 @@ impl FilmRustPro {
 
     fn film_base_params(&self) -> (String, f32, f32, bool) {
         match self.film_base() {
-            Some(l) => match &l.layer_type { LayerType::FilmBase{stock_id,strength,grain,auto_levels}=>(stock_id.clone(),*strength,*grain,*auto_levels), _ => (String::new(),100.0,100.0,true) },
-            None => (String::new(),100.0,100.0,true)
+            Some(l) => match &l.layer_type {
+                LayerType::FilmBase {
+                    stock_id,
+                    strength,
+                    grain,
+                    auto_levels,
+                } => (stock_id.clone(), *strength, *grain, *auto_levels),
+                _ => (String::new(), 100.0, 100.0, true),
+            },
+            None => (String::new(), 100.0, 100.0, true),
         }
     }
 
@@ -433,21 +756,47 @@ impl FilmRustPro {
         if let Some(p) = self.files.get(self.selected_idx) {
             match Self::open_image_safe(p) {
                 Ok(img) => {
-                    let (w,h)=(img.width(),img.height());
+                    let (w, h) = (img.width(), img.height());
                     // 显示用降采样（≤3600px，清晰查看）
-                    let display_scale = if w.max(h) > 3600 { 3600.0 / w.max(h) as f32 } else { 1.0 };
-                    
+                    let display_scale = if w.max(h) > 3600 {
+                        3600.0 / w.max(h) as f32
+                    } else {
+                        1.0
+                    };
+
                     // 显示用降采样
-                    let scaled = img.resize((w as f32*display_scale) as u32,(h as f32*display_scale) as u32,image::imageops::FilterType::Lanczos3);
-                    let rgba=scaled.to_rgba8(); let (rw,rh)=(rgba.width() as _,rgba.height() as _);
-                    self.original_tex=Some(ctx.load_texture("orig",ColorImage::from_rgba_unmultiplied([rw,rh],rgba.as_raw()),egui::TextureOptions::NEAREST));
-                    self.original_img=Some(scaled);
-                    self.display_img_w = rw as u32; self.display_img_h = rh as u32;
-                    self.has_processed=false; self.processed_tex=None; self.processed_base=None; self.comparison_mode=false;
+                    let scaled = img.resize(
+                        (w as f32 * display_scale) as u32,
+                        (h as f32 * display_scale) as u32,
+                        image::imageops::FilterType::Lanczos3,
+                    );
+                    let rgba = scaled.to_rgba8();
+                    let (rw, rh) = (rgba.width() as _, rgba.height() as _);
+                    self.original_tex = Some(ctx.load_texture(
+                        "orig",
+                        ColorImage::from_rgba_unmultiplied([rw, rh], rgba.as_raw()),
+                        egui::TextureOptions::NEAREST,
+                    ));
+                    self.original_img = Some(scaled);
+                    self.display_img_w = rw as u32;
+                    self.display_img_h = rh as u32;
+                    self.has_processed = false;
+                    self.processed_tex = None;
+                    self.processed_base = None;
+                    self.comparison_mode = false;
                     self.last_dir = p.parent().map(|d| d.to_path_buf());
-                    self.status=format!("已加载: {} ({}x{})",p.file_name().unwrap_or_default().to_string_lossy(),w,h); self.status_ok=true;
+                    self.status = format!(
+                        "已加载: {} ({}x{})",
+                        p.file_name().unwrap_or_default().to_string_lossy(),
+                        w,
+                        h
+                    );
+                    self.status_ok = true;
                 }
-                Err(e)=>{self.status=format!("加载失败: {}",e);self.status_ok=false;}
+                Err(e) => {
+                    self.status = format!("加载失败: {}", e);
+                    self.status_ok = false;
+                }
             }
         }
     }
@@ -460,35 +809,66 @@ impl FilmRustPro {
         reader.decode()
     }
 
-    fn do_process(img: &DynamicImage, stock_id: &str, _strength: f32, grain: f32, auto_levels: bool) -> ProcessResult {
+    fn do_process(
+        img: &DynamicImage,
+        stock_id: &str,
+        _strength: f32,
+        grain: f32,
+        auto_levels: bool,
+    ) -> ProcessResult {
         match find_filmr_stock(stock_id) {
             Ok(stock) => {
                 let config = SimulationConfig {
-                    exposure_time:1.0, auto_levels, white_balance_mode:filmr::WhiteBalanceMode::Off,
-                    enable_grain:grain>5.0, motion_blur_amount:0.0, object_motion_amount:0.0,
-                    light_leak:filmr::light_leak::LightLeakConfig{enabled:false,leaks:vec![]},
-                    warmth:0.0, saturation:1.0,
-                    use_gpu: true,  // GPU 加速（工业级标准）
+                    exposure_time: 1.0,
+                    auto_levels,
+                    white_balance_mode: filmr::WhiteBalanceMode::Off,
+                    enable_grain: grain > 5.0,
+                    motion_blur_amount: 0.0,
+                    object_motion_amount: 0.0,
+                    light_leak: filmr::light_leak::LightLeakConfig {
+                        enabled: false,
+                        leaks: vec![],
+                    },
+                    warmth: 0.0,
+                    saturation: 1.0,
+                    use_gpu: true, // GPU 加速（工业级标准）
                     ..Default::default()
                 };
                 match apply_film(&img.to_rgb8(), &stock, &config) {
                     // 直接返回 filmr 结果，不附加任何后处理降噪/增强操作
                     // grain 仅控制 filmr 层面的 enable_grain 开关，不额外操作像素
-                    Ok(r) => ProcessResult{ok:true, image:Some(DynamicImage::ImageRgb8(r)), error:None},
-                    Err(e) => ProcessResult{ok:false, image:None, error:Some(e.to_string())},
+                    Ok(r) => ProcessResult {
+                        ok: true,
+                        image: Some(DynamicImage::ImageRgb8(r)),
+                        error: None,
+                    },
+                    Err(e) => ProcessResult {
+                        ok: false,
+                        image: None,
+                        error: Some(e.to_string()),
+                    },
                 }
             }
-            Err(e) => ProcessResult{ok:false, image:None, error:Some(e.to_string())},
+            Err(e) => ProcessResult {
+                ok: false,
+                image: None,
+                error: Some(e.to_string()),
+            },
         }
     }
 
     fn trigger_develop(&mut self, ctx: &egui::Context) {
-        if self.is_processing || self.original_img.is_none() { return; }
+        if self.is_processing || self.original_img.is_none() {
+            return;
+        }
         let img = self.original_img.clone().unwrap();
         let (sid, strength, grain, auto_levels) = self.film_base_params();
-        self.is_processing = true; self.animating = false; self.comparison_mode = false;
+        self.is_processing = true;
+        self.animating = false;
+        self.comparison_mode = false;
         self.anim_src = Some(img.to_rgba8());
-        let (tx, rx) = mpsc::channel(); self.proc_result_rx = Some(rx);
+        let (tx, rx) = mpsc::channel();
+        self.proc_result_rx = Some(rx);
         std::thread::spawn(move || {
             let r = Self::do_process(&img, &sid, strength, grain, auto_levels);
             let _ = tx.send(r);
@@ -499,34 +879,48 @@ impl FilmRustPro {
     fn check_process_result(&mut self, _ctx: &egui::Context) {
         if let Some(rx) = &self.proc_result_rx {
             if let Ok(r) = rx.try_recv() {
-                self.is_processing = false; self.proc_result_rx = None;
+                self.is_processing = false;
+                self.proc_result_rx = None;
                 if r.ok {
                     if let Some(img) = r.image {
                         let rgb8 = img.to_rgb8();
-                        
+
                         // 双缓存策略：filmr 处理完成后生成两个缓存
                         // 1. cached_filmr_base: 原图尺寸，导出用
                         self.cached_filmr_base = Some(rgb8.clone());
-                        
+
                         // 2. preview_cache: 缩略图（1600px），滑块响应快
-                        let (w,h) = (rgb8.width(), rgb8.height());
-                        let preview_scale = if w.max(h) > 1600 { 1600.0 / w.max(h) as f32 } else { 1.0 };
+                        let (w, h) = (rgb8.width(), rgb8.height());
+                        let preview_scale = if w.max(h) > 1600 {
+                            1600.0 / w.max(h) as f32
+                        } else {
+                            1.0
+                        };
                         let dynamic_img = image::DynamicImage::ImageRgb8(rgb8.clone());
-                        let preview_scaled = dynamic_img.resize((w as f32*preview_scale) as u32,(h as f32*preview_scale) as u32,image::imageops::FilterType::Lanczos3);
+                        let preview_scaled = dynamic_img.resize(
+                            (w as f32 * preview_scale) as u32,
+                            (h as f32 * preview_scale) as u32,
+                            image::imageops::FilterType::Lanczos3,
+                        );
                         self.preview_cache = Some(preview_scaled.to_rgb8());
-                        
+
                         // 合成一次后处理层，并存两份：
                         //   processed_base → 动画结束后显示
                         //   anim_dst → 动画从原图过渡到此最终合成结果
-                        let comp = self.layers.composite(&rgb8, false, self.global_strength / 100.0);
+                        let comp =
+                            self.layers
+                                .composite(&rgb8, false, self.global_strength / 100.0);
                         self.anim_dst = Some(DynamicImage::ImageRgb8(comp.clone()).to_rgba8());
                         self.processed_base = Some(comp);
-                        self.animating = true; self.anim_start = Instant::now();
+                        self.animating = true;
+                        self.anim_start = Instant::now();
                         self.has_processed = true;
-                        self.status = "处理完成 — 调整图层参数实时预览".into(); self.status_ok = true;
+                        self.status = "处理完成 — 调整图层参数实时预览".into();
+                        self.status_ok = true;
                     }
                 } else {
-                    self.status = format!("处理失败: {}", r.error.unwrap_or_default()); self.status_ok = false;
+                    self.status = format!("处理失败: {}", r.error.unwrap_or_default());
+                    self.status_ok = false;
                 }
             }
         }
@@ -542,35 +936,63 @@ impl FilmRustPro {
         } else {
             return;
         };
-        
-        let comp = self.layers.composite(base, false, self.global_strength / 100.0);
+
+        let comp = self
+            .layers
+            .composite(base, false, self.global_strength / 100.0);
         self.processed_base = Some(comp);
         self.has_processed = true;
     }
 
     fn render_developing_frame(&self, t: f32) -> Option<image::RgbaImage> {
-        let src = self.anim_src.as_ref()?; let dst = self.anim_dst.as_ref()?;
+        let src = self.anim_src.as_ref()?;
+        let dst = self.anim_dst.as_ref()?;
         let mut out = src.clone();
-        let eased = if t<0.5 {2.0*t*t} else {-1.0+(4.0-2.0*t)*t};
-        for (s,(d,o)) in src.pixels().zip(dst.pixels().zip(out.pixels_mut())) {
-            o[0]=lerp_u8(s[0],d[0],eased); o[1]=lerp_u8(s[1],d[1],eased); o[2]=lerp_u8(s[2],d[2],eased);
+        let eased = if t < 0.5 {
+            2.0 * t * t
+        } else {
+            -1.0 + (4.0 - 2.0 * t) * t
+        };
+        for (s, (d, o)) in src.pixels().zip(dst.pixels().zip(out.pixels_mut())) {
+            o[0] = lerp_u8(s[0], d[0], eased);
+            o[1] = lerp_u8(s[1], d[1], eased);
+            o[2] = lerp_u8(s[2], d[2], eased);
         }
         Some(out)
     }
 
     fn do_export_one(&mut self, path: &Path, fmt: ExportFormat) -> bool {
-        let full = match Self::open_image_safe(path) { Ok(f) => f, Err(e) => { self.status = format!("打开失败: {}", e); self.status_ok = false; return false; } };
-        let (sid,s,grain,auto_levels) = self.film_base_params();
+        let full = match Self::open_image_safe(path) {
+            Ok(f) => f,
+            Err(e) => {
+                self.status = format!("打开失败: {}", e);
+                self.status_ok = false;
+                return false;
+            }
+        };
+        let (sid, s, grain, auto_levels) = self.film_base_params();
         let r = Self::do_process(&full, &sid, s, grain, auto_levels);
-        if !r.ok { self.status = format!("处理失败: {}", r.error.unwrap_or_default()); self.status_ok = false; return false; }
+        if !r.ok {
+            self.status = format!("处理失败: {}", r.error.unwrap_or_default());
+            self.status_ok = false;
+            return false;
+        }
         let proc = r.image.unwrap();
         let rgb = proc.to_rgb8();
-        let comp = self.layers.composite(&rgb, true, self.global_strength / 100.0);
+        let comp = self
+            .layers
+            .composite(&rgb, true, self.global_strength / 100.0);
         let stem = path.file_stem().unwrap_or_default().to_string_lossy();
         let dir = self.last_dir.as_ref().cloned().unwrap_or_else(|| {
-            path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
+            path.parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."))
         });
-        let ext = if matches!(fmt, ExportFormat::Jpeg) { ".jpg" } else { ".png" };
+        let ext = if matches!(fmt, ExportFormat::Jpeg) {
+            ".jpg"
+        } else {
+            ".png"
+        };
         let out = dir.join(format!("{}_filmrust{}", stem, ext));
         let ok = match fmt {
             ExportFormat::Jpeg => {
@@ -578,18 +1000,28 @@ impl FilmRustPro {
                 let (w, h) = rgb.dimensions();
                 let mut buf = Vec::new();
                 let mut encoder = JpegEncoder::new_with_quality(&mut buf, 97);
-                if encoder.encode(rgb.as_raw(), w, h, image::ExtendedColorType::Rgb8).is_ok() {
+                if encoder
+                    .encode(rgb.as_raw(), w, h, image::ExtendedColorType::Rgb8)
+                    .is_ok()
+                {
                     let final_data = preserve_jpeg_exif(path, buf);
                     std::fs::write(&out, final_data).is_ok()
-                } else { false }
+                } else {
+                    false
+                }
             }
             ExportFormat::Png => {
                 let rgb = DynamicImage::ImageRgb8(comp).to_rgb8();
                 let mut buf = Vec::new();
-                if DynamicImage::ImageRgb8(rgb).write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png).is_ok() {
+                if DynamicImage::ImageRgb8(rgb)
+                    .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+                    .is_ok()
+                {
                     let final_data = inject_exif_into_png(&buf, path);
                     std::fs::write(&out, final_data).is_ok()
-                } else { false }
+                } else {
+                    false
+                }
             }
         };
         if ok {
@@ -622,18 +1054,31 @@ fn preserve_jpeg_exif(input_path: &Path, output_data: Vec<u8>) -> Vec<u8> {
 /// 返回值统一为 JPEG APP1 格式：0xFF 0xE1 + len(2B) + "Exif\0\0"(6B) + TIFF EXIF 结构
 /// 支持 JPEG(0xFFE1)、PNG(eXIf)、TIFF(IFD解析)
 fn extract_exif_segment(data: &[u8]) -> Option<Vec<u8>> {
-    if data.len() < 8 { return None; }
+    if data.len() < 8 {
+        return None;
+    }
     // JPEG: SOI(0xFFD8)
     if data[0] == 0xFF && data[1] == 0xD8 {
         let mut i = 2;
         while i + 3 < data.len() {
-            if data[i] != 0xFF { break; }
+            if data[i] != 0xFF {
+                break;
+            }
             let marker = data[i + 1];
-            if marker == 0xDA || marker == 0xD9 { break; }
-            if marker == 0x00 { i += 1; continue; }
-            if i + 3 >= data.len() { break; }
+            if marker == 0xDA || marker == 0xD9 {
+                break;
+            }
+            if marker == 0x00 {
+                i += 1;
+                continue;
+            }
+            if i + 3 >= data.len() {
+                break;
+            }
             let seg_len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
-            if i + 2 + seg_len > data.len() { break; }
+            if i + 2 + seg_len > data.len() {
+                break;
+            }
             if marker == 0xE1 {
                 return Some(data[i..i + 2 + seg_len].to_vec());
             }
@@ -644,7 +1089,9 @@ fn extract_exif_segment(data: &[u8]) -> Option<Vec<u8>> {
     if data[0] == 0x89 && data[1] == 0x50 {
         let mut pos = 8;
         while pos + 12 <= data.len() {
-            let chunk_len = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+            let chunk_len =
+                u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+                    as usize;
             let chunk_type = &data[pos + 4..pos + 8];
             if chunk_type == b"eXIf" && pos + 12 + chunk_len <= data.len() {
                 // eXIf payload is raw TIFF header+IFD. Wrap as JPEG APP1.
@@ -671,7 +1118,8 @@ fn extract_exif_segment(data: &[u8]) -> Option<Vec<u8>> {
 fn wrap_tiff_as_jpeg_app1(tiff_data: &[u8]) -> Vec<u8> {
     let total_len = 2 + 6 + tiff_data.len(); // length field + "Exif\0\0" + tiff
     let mut out = Vec::with_capacity(2 + 2 + total_len);
-    out.push(0xFF); out.push(0xE1);
+    out.push(0xFF);
+    out.push(0xE1);
     out.extend_from_slice(&(total_len as u16).to_be_bytes());
     out.extend_from_slice(b"Exif\0\0");
     out.extend_from_slice(tiff_data);
@@ -679,28 +1127,42 @@ fn wrap_tiff_as_jpeg_app1(tiff_data: &[u8]) -> Vec<u8> {
 }
 
 fn u16_val(b: &[u8], le: bool) -> u16 {
-    if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) }
+    if le {
+        u16::from_le_bytes([b[0], b[1]])
+    } else {
+        u16::from_be_bytes([b[0], b[1]])
+    }
 }
 fn u32_val(b: &[u8], le: bool) -> u32 {
-    if le { u32::from_le_bytes([b[0], b[1], b[2], b[3]]) } else { u32::from_be_bytes([b[0], b[1], b[2], b[3]]) }
+    if le {
+        u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+    } else {
+        u32::from_be_bytes([b[0], b[1], b[2], b[3]])
+    }
 }
 
 /// 从 TIFF 源文件中提取 EXIF 数据所占的字节范围（0..end_of_exif）
 /// TIFF 本身就是 TIFF 格式的 EXIF 容器，无需重建 IFD，直接拷贝 header + IFD + 引用值
 fn rebuild_tiff_exif(data: &[u8], le: bool) -> Option<Vec<u8>> {
     let ifd0_off = u32_val(&data[4..8], le) as usize;
-    if ifd0_off + 2 > data.len() { return None; }
+    if ifd0_off + 2 > data.len() {
+        return None;
+    }
 
     // 扫描 IFD0: 找到 ExifIFD 偏移和所有 out-of-line 值的最大偏移
     let n0 = u16_val(&data[ifd0_off..ifd0_off + 2], le) as usize;
-    if ifd0_off + 2 + n0 * 12 + 4 > data.len() { return None; }
+    if ifd0_off + 2 + n0 * 12 + 4 > data.len() {
+        return None;
+    }
 
     let mut exif_sub_off: Option<usize> = None;
     let mut max_referenced: usize = 0;
 
     fn add_ref(off: usize, byte_size: usize, max: &mut usize) {
         let end = off + byte_size;
-        if end > *max { *max = end; }
+        if end > *max {
+            *max = end;
+        }
     }
 
     for i in 0..n0 {
@@ -725,7 +1187,9 @@ fn rebuild_tiff_exif(data: &[u8], le: bool) -> Option<Vec<u8>> {
             if sub + 2 + n_sub * 12 + 4 <= data.len() {
                 // sub-IFD 自身所占字节也要包含
                 let sub_end = sub + 2 + n_sub * 12 + 4;
-                if sub_end > max_referenced { max_referenced = sub_end; }
+                if sub_end > max_referenced {
+                    max_referenced = sub_end;
+                }
                 for i in 0..n_sub {
                     let e_off = sub + 2 + i * 12;
                     let typ = u16_val(&data[e_off + 2..e_off + 4], le);
@@ -744,7 +1208,9 @@ fn rebuild_tiff_exif(data: &[u8], le: bool) -> Option<Vec<u8>> {
 
     // IFD0 自身也要包含（包括 IFD0 本身 + next IFD 指针）
     let ifd0_end = ifd0_off + 2 + n0 * 12 + 4;
-    if ifd0_end > max_referenced { max_referenced = ifd0_end; }
+    if ifd0_end > max_referenced {
+        max_referenced = ifd0_end;
+    }
 
     // TIFF header (8B) + 上面所有引用数据 组成的范围就是完整的 EXIF 结构
     let copy_end = max_referenced.min(data.len());
@@ -752,7 +1218,9 @@ fn rebuild_tiff_exif(data: &[u8], le: bool) -> Option<Vec<u8>> {
     if copy_end > 8 && copy_end <= 131072 {
         let tiff_segment = &data[0..copy_end];
         // 验证：magic 42 应该还在
-        if u16_val(&tiff_segment[2..4], le) != 42 { return None; }
+        if u16_val(&tiff_segment[2..4], le) != 42 {
+            return None;
+        }
         Some(tiff_segment.to_vec())
     } else {
         // 如果 EXIF 数据跨越很大范围（不合理），走重建路径
@@ -764,9 +1232,13 @@ fn rebuild_tiff_exif(data: &[u8], le: bool) -> Option<Vec<u8>> {
 /// 逐个 IFD 条目拷贝，跳过过大偏移的值
 fn rebuild_tiff_exif_safe(data: &[u8], le: bool) -> Option<Vec<u8>> {
     let ifd0_off = u32_val(&data[4..8], le) as usize;
-    if ifd0_off + 2 > data.len() { return None; }
+    if ifd0_off + 2 > data.len() {
+        return None;
+    }
     let n0 = u16_val(&data[ifd0_off..ifd0_off + 2], le) as usize;
-    if ifd0_off + 2 + n0 * 12 + 4 > data.len() { return None; }
+    if ifd0_off + 2 + n0 * 12 + 4 > data.len() {
+        return None;
+    }
 
     let mut entries0: Vec<(u16, u16, u32, Vec<u8>)> = Vec::new();
     let mut exif_sub_off: Option<u32> = None;
@@ -781,8 +1253,11 @@ fn rebuild_tiff_exif_safe(data: &[u8], le: bool) -> Option<Vec<u8>> {
             (data[e_off + 8..e_off + 12].to_vec(), None)
         } else {
             let off = u32_val(&data[e_off + 8..e_off + 12], le) as usize;
-            if off + byte_size <= data.len() { (data[off..off + byte_size].to_vec(), Some(off as u32)) }
-            else { continue; }
+            if off + byte_size <= data.len() {
+                (data[off..off + byte_size].to_vec(), Some(off as u32))
+            } else {
+                continue;
+            }
         };
         if tag == 0x8769 {
             exif_sub_off = Some(u32_val(&data[e_off + 8..e_off + 12], le));
@@ -808,8 +1283,9 @@ fn rebuild_tiff_exif_safe(data: &[u8], le: bool) -> Option<Vec<u8>> {
                         data[e_off + 8..e_off + 12].to_vec()
                     } else {
                         let off = u32_val(&data[e_off + 8..e_off + 12], le) as usize;
-                        if off + byte_size <= data.len() { data[off..off + byte_size].to_vec() }
-                        else {
+                        if off + byte_size <= data.len() {
+                            data[off..off + byte_size].to_vec()
+                        } else {
                             // EXIF 引用值超出文件范围，补零
                             vec![0u8; byte_size.min(256)]
                         }
@@ -827,7 +1303,8 @@ fn rebuild_tiff_exif_safe(data: &[u8], le: bool) -> Option<Vec<u8>> {
     let bo = if le { 0x49 } else { 0x4D };
 
     let mut out = Vec::with_capacity(val_start as usize + 8192);
-    out.push(bo); out.push(bo);
+    out.push(bo);
+    out.push(bo);
     out.extend_from_slice(&42u16.to_le_bytes());
     out.extend_from_slice(&8u32.to_le_bytes());
 
@@ -840,7 +1317,9 @@ fn rebuild_tiff_exif_safe(data: &[u8], le: bool) -> Option<Vec<u8>> {
         if tag == 0x8769 {
             out.extend_from_slice(&(8u32 + ifd0_bcnt as u32).to_le_bytes());
         } else if val.len() <= 4 {
-            let mut p = [0u8; 4]; p[..val.len()].copy_from_slice(val); out.extend_from_slice(&p);
+            let mut p = [0u8; 4];
+            p[..val.len()].copy_from_slice(val);
+            out.extend_from_slice(&p);
         } else {
             out.extend_from_slice(&ool_off.to_le_bytes());
             ool_off += val.len() as u32;
@@ -854,7 +1333,9 @@ fn rebuild_tiff_exif_safe(data: &[u8], le: bool) -> Option<Vec<u8>> {
         out.extend_from_slice(&typ.to_le_bytes());
         out.extend_from_slice(&count.to_le_bytes());
         if val.len() <= 4 {
-            let mut p = [0u8; 4]; p[..val.len()].copy_from_slice(val); out.extend_from_slice(&p);
+            let mut p = [0u8; 4];
+            p[..val.len()].copy_from_slice(val);
+            out.extend_from_slice(&p);
         } else {
             out.extend_from_slice(&ool_off.to_le_bytes());
             ool_off += val.len() as u32;
@@ -862,8 +1343,16 @@ fn rebuild_tiff_exif_safe(data: &[u8], le: bool) -> Option<Vec<u8>> {
     }
     out.extend_from_slice(&0u32.to_le_bytes());
 
-    for (_, _, _, val) in &entries0 { if val.len() > 4 { out.extend_from_slice(val); } }
-    for (_, _, _, val) in &exif_entries { if val.len() > 4 { out.extend_from_slice(val); } }
+    for (_, _, _, val) in &entries0 {
+        if val.len() > 4 {
+            out.extend_from_slice(val);
+        }
+    }
+    for (_, _, _, val) in &exif_entries {
+        if val.len() > 4 {
+            out.extend_from_slice(val);
+        }
+    }
 
     Some(out)
 }
@@ -871,11 +1360,11 @@ fn rebuild_tiff_exif_safe(data: &[u8], le: bool) -> Option<Vec<u8>> {
 /// TIFF IFD 条目类型字节大小
 fn type_byte_size(typ: u16, count: u32) -> usize {
     let elem = match typ {
-        1 | 6 | 7 => 1,    // BYTE, SBYTE, UNDEFINED
-        2 => 1,             // ASCII
-        3 | 8 => 2,         // SHORT, SSHORT
-        4 | 9 | 11 => 4,   // LONG, SLONG, IFD
-        5 | 10 | 12 => 8,  // RATIONAL, SRATIONAL, DOUBLE
+        1 | 6 | 7 => 1,   // BYTE, SBYTE, UNDEFINED
+        2 => 1,           // ASCII
+        3 | 8 => 2,       // SHORT, SSHORT
+        4 | 9 | 11 => 4,  // LONG, SLONG, IFD
+        5 | 10 | 12 => 8, // RATIONAL, SRATIONAL, DOUBLE
         _ => 1,
     };
     elem * count as usize
@@ -888,15 +1377,20 @@ fn inject_exif_into_jpeg(jpeg_data: &[u8], exif_segment: &[u8]) -> Vec<u8> {
     }
     let mut out = Vec::with_capacity(jpeg_data.len() + exif_segment.len());
     out.extend_from_slice(&jpeg_data[..2]); // SOI
-    out.extend_from_slice(exif_segment);    // 0xFF 0xE1 + len + TIFF data
+    out.extend_from_slice(exif_segment); // 0xFF 0xE1 + len + TIFF data
     out.extend_from_slice(&jpeg_data[2..]);
     out
 }
 
 /// 将 EXIF 数据注入 PNG 输出（eXIf 块，放在 IHDR 之后）
 fn inject_exif_into_png(png_bytes: &[u8], input_path: &Path) -> Vec<u8> {
-    if png_bytes.len() < 33 || png_bytes[0] != 137 || png_bytes[1] != 0x50 { return png_bytes.to_vec(); }
-    let orig = match std::fs::read(input_path) { Ok(d) => d, Err(_) => return png_bytes.to_vec() };
+    if png_bytes.len() < 33 || png_bytes[0] != 137 || png_bytes[1] != 0x50 {
+        return png_bytes.to_vec();
+    }
+    let orig = match std::fs::read(input_path) {
+        Ok(d) => d,
+        Err(_) => return png_bytes.to_vec(),
+    };
     let exif_raw = extract_exif_segment(&orig);
     let exif_raw = match exif_raw {
         Some(d) => d,
@@ -910,7 +1404,9 @@ fn inject_exif_into_png(png_bytes: &[u8], input_path: &Path) -> Vec<u8> {
         // correct slice: [10..seg_len+2)
         if seg_len >= 8 && 10 + seg_len - 8 <= exif_raw.len() {
             &exif_raw[10..seg_len + 2]
-        } else { return png_bytes.to_vec(); }
+        } else {
+            return png_bytes.to_vec();
+        }
     } else {
         return png_bytes.to_vec();
     };
@@ -940,7 +1436,11 @@ fn png_crc32(data: &[u8]) -> u32 {
         for i in 0..256u32 {
             let mut c = i;
             for _ in 0..8 {
-                if c & 1 == 1 { c = poly ^ (c >> 1); } else { c >>= 1; }
+                if c & 1 == 1 {
+                    c = poly ^ (c >> 1);
+                } else {
+                    c >>= 1;
+                }
             }
             t[i as usize] = c;
         }
@@ -954,9 +1454,14 @@ fn png_crc32(data: &[u8]) -> u32 {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum ExportFormat { Jpeg, Png }
+enum ExportFormat {
+    Jpeg,
+    Png,
+}
 
-fn lerp_u8(a:u8,b:u8,t:f32)->u8 {(a as f32+(b as f32 - a as f32)*t).clamp(0.0,255.0) as u8}
+fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
+    (a as f32 + (b as f32 - a as f32) * t).clamp(0.0, 255.0) as u8
+}
 
 // ============================================================
 impl eframe::App for FilmRustPro {
@@ -965,17 +1470,33 @@ impl eframe::App for FilmRustPro {
         // 18:00-06:00 自动深色，06:00-18:00 自动浅色
         // 用户手动点击切换按钮可覆盖
         if !self.manually_toggled {
-            let since_epoch = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+            let since_epoch = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
             let hour_utc8 = ((since_epoch.as_secs() / 3600) + 8) % 24;
             self.dark_mode = !(6..18).contains(&hour_utc8);
         }
         // 将 self.dark_mode 的值写入 egui 视觉风格
-        ui.ctx().set_visuals(if self.dark_mode { egui::Visuals::dark() } else { egui::Visuals::light() });
+        ui.ctx().set_visuals(if self.dark_mode {
+            egui::Visuals::dark()
+        } else {
+            egui::Visuals::light()
+        });
 
         // 拖拽导入
-        let dropped: Vec<PathBuf> = ui.ctx().input(|i| i.raw.dropped_files.iter().filter_map(|df| df.path.clone()).collect());
+        let dropped: Vec<PathBuf> = ui.ctx().input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .filter_map(|df| df.path.clone())
+                .collect()
+        });
         if !dropped.is_empty() {
-            for p in dropped { if !self.files.contains(&p) { self.files.push(p); } }
+            for p in dropped {
+                if !self.files.contains(&p) {
+                    self.files.push(p);
+                }
+            }
             self.selected_idx = self.files.len().saturating_sub(1);
             self.load_image_for_display(ui.ctx());
         }
@@ -984,26 +1505,38 @@ impl eframe::App for FilmRustPro {
 
         if self.has_processed || self.animating {
             let rgba_image: Option<image::RgbaImage> = if self.animating {
-                let t = (self.anim_start.elapsed().as_secs_f32()/self.anim_duration).min(1.0);
+                let t = (self.anim_start.elapsed().as_secs_f32() / self.anim_duration).min(1.0);
                 if let Some(frame) = self.render_developing_frame(t) {
-                    if t>=1.0 { self.animating = false; }
+                    if t >= 1.0 {
+                        self.animating = false;
+                    }
                     Some(frame)
-                } else { None }
+                } else {
+                    None
+                }
             } else {
                 // processed_base 已是 composite 结果，直接显示
-                self.processed_base.as_ref().map(|processed_base| DynamicImage::ImageRgb8(processed_base.clone()).to_rgba8())
+                self.processed_base.as_ref().map(|processed_base| {
+                    DynamicImage::ImageRgb8(processed_base.clone()).to_rgba8()
+                })
             };
             if let Some(rgba) = rgba_image {
-                let (rw,rh) = (rgba.width() as _, rgba.height() as _);
-                self.processed_tex = Some(ui.ctx().load_texture("live",
-                    ColorImage::from_rgba_unmultiplied([rw,rh],rgba.as_raw()), egui::TextureOptions::NEAREST));
+                let (rw, rh) = (rgba.width() as _, rgba.height() as _);
+                self.processed_tex = Some(ui.ctx().load_texture(
+                    "live",
+                    ColorImage::from_rgba_unmultiplied([rw, rh], rgba.as_raw()),
+                    egui::TextureOptions::NEAREST,
+                ));
             }
             ui.ctx().request_repaint();
         }
 
-        let cr=CornerRadius::same(12u8); let pad:i8=12;
+        let cr = CornerRadius::same(12u8);
+        let pad: i8 = 12;
 
-        if self.show_curves_overlay { self.render_curves_overlay(ui); }
+        if self.show_curves_overlay {
+            self.render_curves_overlay(ui);
+        }
 
         egui::Panel::top("tb").frame(Frame{corner_radius:cr,fill:self.bg_top(),inner_margin:egui::Margin::same(pad),..Default::default()})
         .show_inside(ui,|ui|{ ui.horizontal(|ui|{
@@ -1027,26 +1560,72 @@ impl eframe::App for FilmRustPro {
             });
         });});
 
-        egui::Panel::bottom("sb").frame(Frame{corner_radius:cr,fill:self.bg_bottom(),inner_margin:egui::Margin::symmetric(pad,8),..Default::default()})
-        .show_inside(ui,|ui|{ ui.horizontal(|ui|{
-            let guide = self.guide_msg();
-            ui.label(egui::RichText::new(&self.status).size(13.0).color(if self.status_ok{self.text_ok()}else{self.text_err()}));
-            ui.label(egui::RichText::new(guide).size(12.0).color(self.text_dim()));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
-                ui.label(egui::RichText::new("星TAP软件 2026 | csb603@qq.com").size(11.0).color(self.text_dim()));
+        egui::Panel::bottom("sb")
+            .frame(Frame {
+                corner_radius: cr,
+                fill: self.bg_bottom(),
+                inner_margin: egui::Margin::symmetric(pad, 8),
+                ..Default::default()
+            })
+            .show_inside(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let guide = self.guide_msg();
+                    ui.label(egui::RichText::new(&self.status).size(13.0).color(
+                        if self.status_ok {
+                            self.text_ok()
+                        } else {
+                            self.text_err()
+                        },
+                    ));
+                    ui.label(egui::RichText::new(guide).size(12.0).color(self.text_dim()));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new("星TAP软件 2026 | csb603@qq.com")
+                                .size(11.0)
+                                .color(self.text_dim()),
+                        );
+                    });
+                });
             });
-        });});
 
-        egui::Panel::left("fp").resizable(true).default_size(250.0).min_size(200.0)
-            .frame(Frame{corner_radius:cr,fill:self.bg_panel(),inner_margin:egui::Margin::same(pad),..Default::default()})
-            .show_inside(ui,|ui|{self.render_file_panel(ui);});
+        egui::Panel::left("fp")
+            .resizable(true)
+            .default_size(250.0)
+            .min_size(200.0)
+            .frame(Frame {
+                corner_radius: cr,
+                fill: self.bg_panel(),
+                inner_margin: egui::Margin::same(pad),
+                ..Default::default()
+            })
+            .show_inside(ui, |ui| {
+                self.render_file_panel(ui);
+            });
 
-        egui::Panel::right("lp").resizable(true).default_size(270.0).min_size(230.0)
-            .frame(Frame{corner_radius:cr,fill:self.bg_panel(),inner_margin:egui::Margin::same(pad),..Default::default()})
-            .show_inside(ui,|ui|{self.render_layer_panel(ui);});
+        egui::Panel::right("lp")
+            .resizable(true)
+            .default_size(270.0)
+            .min_size(230.0)
+            .frame(Frame {
+                corner_radius: cr,
+                fill: self.bg_panel(),
+                inner_margin: egui::Margin::same(pad),
+                ..Default::default()
+            })
+            .show_inside(ui, |ui| {
+                self.render_layer_panel(ui);
+            });
 
-        CentralPanel::default().frame(Frame{corner_radius:cr,fill:self.bg_center(),inner_margin:egui::Margin::same(pad),..Default::default()})
-            .show_inside(ui,|ui|{self.render_preview(ui);});
+        CentralPanel::default()
+            .frame(Frame {
+                corner_radius: cr,
+                fill: self.bg_center(),
+                inner_margin: egui::Margin::same(pad),
+                ..Default::default()
+            })
+            .show_inside(ui, |ui| {
+                self.render_preview(ui);
+            });
     }
 }
 
@@ -1058,7 +1637,10 @@ impl FilmRustPro {
         let panel_clip = ui.clip_rect();
         let scroll = ui.input(|i| i.smooth_scroll_delta.y);
         if scroll.abs() > 8.0 && !self.presets.is_empty() {
-            let in_panel = ui.ctx().pointer_hover_pos().is_some_and(|p| panel_clip.contains(p));
+            let in_panel = ui
+                .ctx()
+                .pointer_hover_pos()
+                .is_some_and(|p| panel_clip.contains(p));
             if in_panel {
                 // 限制为每帧最多切换 1 个预设
                 let dir: isize = scroll.signum() as isize;
@@ -1068,35 +1650,125 @@ impl FilmRustPro {
             }
         }
 
-        ui.heading(egui::RichText::new("文件列表").size(16.0).color(self.text_accent()));
-        ui.horizontal(|ui|{
-            if ui.button("添加图片").on_hover_text("选择更多图片添加到列表，支持批量处理").clicked(){ if let Some(ps)=FileDialog::new().add_filter("图片",&["png","jpg","jpeg","tiff","tif","bmp","webp"]).pick_files(){for p in ps{if !self.files.contains(&p){self.files.push(p);}}if self.files.len()==1{self.selected_idx=0;self.load_image_for_display(ui.ctx());}}}
-            if ui.button("清空").on_hover_text("清空图片列表，重新开始").clicked(){self.files.clear();self.selected_idx=0;}
-        });
-        ui.add_space(6.0);
-        let mut to_rem: Option<usize> = None; let mut to_sel: Option<usize> = None;
-        egui::ScrollArea::vertical().max_height(280.0).show(ui,|ui|{
-            for i in 0..self.files.len() {
-                let name=self.files[i].file_name().unwrap_or_default().to_string_lossy();
-                let is_sel=self.selected_idx==i;
-                Frame::NONE.fill(if is_sel{self.bg_layer_sel()}else{self.bg_layer()}).corner_radius(CornerRadius::same(6u8)).inner_margin(egui::Margin::symmetric(8,4)).show(ui,|ui|{ui.horizontal(|ui|{
-                    if ui.selectable_label(is_sel,name).on_hover_text(if is_sel{"当前选中的照片"}else{"切换到此照片"}).clicked(){to_sel=Some(i);}
-                    if ui.small_button("删除").on_hover_text("从列表中移除此图片").clicked(){to_rem=Some(i);}
-                });});
+        ui.heading(
+            egui::RichText::new("文件列表")
+                .size(16.0)
+                .color(self.text_accent()),
+        );
+        ui.horizontal(|ui| {
+            if ui
+                .button("添加图片")
+                .on_hover_text("选择更多图片添加到列表，支持批量处理")
+                .clicked()
+            {
+                if let Some(ps) = FileDialog::new()
+                    .add_filter(
+                        "图片",
+                        &["png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp"],
+                    )
+                    .pick_files()
+                {
+                    for p in ps {
+                        if !self.files.contains(&p) {
+                            self.files.push(p);
+                        }
+                    }
+                    if self.files.len() == 1 {
+                        self.selected_idx = 0;
+                        self.load_image_for_display(ui.ctx());
+                    }
+                }
+            }
+            if ui
+                .button("清空")
+                .on_hover_text("清空图片列表，重新开始")
+                .clicked()
+            {
+                self.files.clear();
+                self.selected_idx = 0;
             }
         });
-        if let Some(i)=to_sel{self.selected_idx=i;self.load_image_for_display(ui.ctx());}
-        if let Some(i)=to_rem{self.files.remove(i);if self.selected_idx>=self.files.len(){self.selected_idx=self.files.len().saturating_sub(1);}}
+        ui.add_space(6.0);
+        let mut to_rem: Option<usize> = None;
+        let mut to_sel: Option<usize> = None;
+        egui::ScrollArea::vertical()
+            .max_height(280.0)
+            .show(ui, |ui| {
+                for i in 0..self.files.len() {
+                    let name = self.files[i]
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy();
+                    let is_sel = self.selected_idx == i;
+                    Frame::NONE
+                        .fill(if is_sel {
+                            self.bg_layer_sel()
+                        } else {
+                            self.bg_layer()
+                        })
+                        .corner_radius(CornerRadius::same(6u8))
+                        .inner_margin(egui::Margin::symmetric(8, 4))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .selectable_label(is_sel, name)
+                                    .on_hover_text(if is_sel {
+                                        "当前选中的照片"
+                                    } else {
+                                        "切换到此照片"
+                                    })
+                                    .clicked()
+                                {
+                                    to_sel = Some(i);
+                                }
+                                if ui
+                                    .small_button("删除")
+                                    .on_hover_text("从列表中移除此图片")
+                                    .clicked()
+                                {
+                                    to_rem = Some(i);
+                                }
+                            });
+                        });
+                }
+            });
+        if let Some(i) = to_sel {
+            self.selected_idx = i;
+            self.load_image_for_display(ui.ctx());
+        }
+        if let Some(i) = to_rem {
+            self.files.remove(i);
+            if self.selected_idx >= self.files.len() {
+                self.selected_idx = self.files.len().saturating_sub(1);
+            }
+        }
 
-        ui.add_space(8.0); ui.separator();
-        ui.heading(egui::RichText::new("胶片选择").size(16.0).color(self.text_accent()));
-        let cn = self.current_preset().map(|p|p.name.clone()).unwrap_or_default();
+        ui.add_space(8.0);
+        ui.separator();
+        ui.heading(
+            egui::RichText::new("胶片选择")
+                .size(16.0)
+                .color(self.text_accent()),
+        );
+        let cn = self
+            .current_preset()
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
         // 常用胶片快速选择
-        let popular = ["Ultramax 400", "Pro 400H", "Natura 1600", "Portra 400", "Gold 200"];
+        let popular = [
+            "Ultramax 400",
+            "Pro 400H",
+            "Natura 1600",
+            "Portra 400",
+            "Gold 200",
+        ];
         ui.horizontal_wrapped(|ui| {
             for name in &popular {
                 let is_active = cn == *name;
-                if ui.selectable_label(is_active, egui::RichText::new(*name).size(12.0)).clicked() {
+                if ui
+                    .selectable_label(is_active, egui::RichText::new(*name).size(12.0))
+                    .clicked()
+                {
                     if let Some(idx) = self.presets.iter().position(|p| p.name == *name) {
                         self.set_preset_index(idx);
                     }
@@ -1105,27 +1777,50 @@ impl FilmRustPro {
         });
         ui.add_space(2.0);
         let mut clicked_idx: Option<usize> = None;
-        egui::ComboBox::from_id_salt("stock").width(210.0).selected_text(&cn).show_ui(ui,|ui|{
-            let h = (self.presets.len() as f32 * 24.0 + 8.0).min(320.0);
-            egui::ScrollArea::vertical().max_height(h).show(ui, |ui| {
-                for (i,p) in self.presets.iter().enumerate() {
-                    if ui.selectable_label(false,&p.name).clicked() {
-                        clicked_idx = Some(i);
+        egui::ComboBox::from_id_salt("stock")
+            .width(210.0)
+            .selected_text(&cn)
+            .show_ui(ui, |ui| {
+                let h = (self.presets.len() as f32 * 24.0 + 8.0).min(320.0);
+                egui::ScrollArea::vertical().max_height(h).show(ui, |ui| {
+                    for (i, p) in self.presets.iter().enumerate() {
+                        if ui.selectable_label(false, &p.name).clicked() {
+                            clicked_idx = Some(i);
+                        }
                     }
-                }
+                });
             });
-        });
-        if let Some(i) = clicked_idx { self.set_preset_index(i); }
-        if let Some(p)=self.current_preset() {
+        if let Some(i) = clicked_idx {
+            self.set_preset_index(i);
+        }
+        if let Some(p) = self.current_preset() {
             ui.add_space(4.0);
-            let tc=tone_color(p); let tl=tone_label(p);
-            ui.label(egui::RichText::new(format!("色调: {}",tl)).size(14.0).color(tc));
-            ui.label(egui::RichText::new(&p.description).size(12.0).color(self.text_dim()));
+            let tc = tone_color(p);
+            let tl = tone_label(p);
+            ui.label(
+                egui::RichText::new(format!("色调: {}", tl))
+                    .size(14.0)
+                    .color(tc),
+            );
+            ui.label(
+                egui::RichText::new(&p.description)
+                    .size(12.0)
+                    .color(self.text_dim()),
+            );
             let usage = film_usage_desc(&p.id);
             if !usage.is_empty() {
-                ui.label(egui::RichText::new(usage).size(11.0).color(self.text_dim())).on_hover_text("基于真实胶片的使用经验和网络资料整理");
+                ui.label(egui::RichText::new(usage).size(11.0).color(self.text_dim()))
+                    .on_hover_text("基于真实胶片的使用经验和网络资料整理");
             }
-            ui.horizontal_wrapped(|ui|{for t in &p.tags{ui.label(egui::RichText::new(format!("[{}]",t)).size(11.0).color(self.text_dim()));}});
+            ui.horizontal_wrapped(|ui| {
+                for t in &p.tags {
+                    ui.label(
+                        egui::RichText::new(format!("[{}]", t))
+                            .size(11.0)
+                            .color(self.text_dim()),
+                    );
+                }
+            });
         }
     }
 }
@@ -1133,23 +1828,44 @@ impl FilmRustPro {
 // ============================================================
 impl FilmRustPro {
     fn render_layer_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading(egui::RichText::new("图层").size(16.0).color(self.text_accent()));
-        ui.label(egui::RichText::new("叠层顺序: 色彩 → 曲线 → 基底").size(10.0).color(self.text_dim()));
-        ui.add_space(2.0); ui.separator();
+        ui.heading(
+            egui::RichText::new("图层")
+                .size(16.0)
+                .color(self.text_accent()),
+        );
+        ui.label(
+            egui::RichText::new("叠层顺序: 色彩 → 曲线 → 基底")
+                .size(10.0)
+                .color(self.text_dim()),
+        );
+        ui.add_space(2.0);
+        ui.separator();
 
         // ── 整体效果强度 ──
         ui.add_space(2.0);
-        ui.horizontal(|ui|{
-            ui.label(egui::RichText::new("整体强度").size(13.0).color(self.text_accent()));
-            let resp = ui.add(egui::Slider::new(&mut self.global_strength, 0.0..=100.0).text("%").suffix("%"));
-            if (resp.changed() || resp.drag_stopped()) && !self.is_processing && self.has_processed {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("整体强度")
+                    .size(13.0)
+                    .color(self.text_accent()),
+            );
+            let resp = ui.add(
+                egui::Slider::new(&mut self.global_strength, 0.0..=100.0)
+                    .text("%")
+                    .suffix("%"),
+            );
+            if (resp.changed() || resp.drag_stopped()) && !self.is_processing && self.has_processed
+            {
                 self.recomposite_from_cache();
             }
         });
-        ui.add_space(4.0); ui.separator();
+        ui.add_space(4.0);
+        ui.separator();
 
         let nl = self.layers.layers.len();
-        let display_order: Vec<usize> = if nl <= 1 { vec![0] } else {
+        let display_order: Vec<usize> = if nl <= 1 {
+            vec![0]
+        } else {
             let mut order: Vec<usize> = (1..nl).collect();
             order.push(0);
             order
@@ -1158,7 +1874,9 @@ impl FilmRustPro {
         // ── 上半部分：图层列表（可滚动）──
         let divider_h = 10.0;
         let total_h = ui.available_height() - 6.0;
-        let list_h = (total_h * self.layer_panel_split).max(120.0).min(total_h - 180.0);
+        let list_h = (total_h * self.layer_panel_split)
+            .max(120.0)
+            .min(total_h - 180.0);
         let props_h = total_h - list_h - divider_h;
 
         egui::ScrollArea::vertical()
@@ -1168,37 +1886,83 @@ impl FilmRustPro {
             .show(ui, |ui| {
                 for i in &display_order {
                     let i = *i;
-                    if i >= nl { continue; }
+                    if i >= nl {
+                        continue;
+                    }
                     let is_sel = self.selected_layer == Some(i);
                     let vis = self.layers.layers[i].visible;
                     let lt = self.layers.layers[i].layer_type.clone();
                     let nm = self.layers.layers[i].name.clone();
                     let row_h = 24.0;
-                    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), egui::Sense::click());
-                    let bg = if is_sel { self.bg_layer_sel() }
-                             else if !vis { if self.dark_mode {Color32::from_rgba_unmultiplied(40,40,45,120)} else {Color32::from_rgba_unmultiplied(210,210,218,130)} }
-                             else { self.bg_layer() };
+                    let (rect, _) = ui.allocate_exact_size(
+                        vec2(ui.available_width(), row_h),
+                        egui::Sense::click(),
+                    );
+                    let bg = if is_sel {
+                        self.bg_layer_sel()
+                    } else if !vis {
+                        if self.dark_mode {
+                            Color32::from_rgba_unmultiplied(40, 40, 45, 120)
+                        } else {
+                            Color32::from_rgba_unmultiplied(210, 210, 218, 130)
+                        }
+                    } else {
+                        self.bg_layer()
+                    };
                     ui.painter().rect_filled(rect, CornerRadius::same(4), bg);
                     if is_sel {
-                        ui.painter().rect_stroke(rect, CornerRadius::same(4), (1.0, self.text_accent()), egui::StrokeKind::Inside);
+                        ui.painter().rect_stroke(
+                            rect,
+                            CornerRadius::same(4),
+                            (1.0, self.text_accent()),
+                            egui::StrokeKind::Inside,
+                        );
                     }
-                    let interact = ui.interact(rect, ui.id().with(("lrow", i)), egui::Sense::click());
-                    if interact.clicked() { self.selected_layer = Some(i); }
+                    let interact =
+                        ui.interact(rect, ui.id().with(("lrow", i)), egui::Sense::click());
+                    if interact.clicked() {
+                        self.selected_layer = Some(i);
+                    }
                     let cy = rect.center().y;
                     // 眼睛图标（可见切换）
                     let eye_txt = if vis { "◉" } else { "◯" };
-                    let eye_col = if vis { self.text_accent() } else { self.text_dim() };
-                    let eye_rect = egui::Rect::from_center_size(egui::pos2(rect.left() + 14.0, cy), vec2(22.0, row_h));
-                    let eye_resp = ui.put(eye_rect, egui::Button::new(egui::RichText::new(eye_txt).size(13.0).color(eye_col)).frame(false));
+                    let eye_col = if vis {
+                        self.text_accent()
+                    } else {
+                        self.text_dim()
+                    };
+                    let eye_rect = egui::Rect::from_center_size(
+                        egui::pos2(rect.left() + 14.0, cy),
+                        vec2(22.0, row_h),
+                    );
+                    let eye_resp = ui.put(
+                        eye_rect,
+                        egui::Button::new(egui::RichText::new(eye_txt).size(13.0).color(eye_col))
+                            .frame(false),
+                    );
                     if eye_resp.clicked() {
                         self.layers.layers[i].visible = !vis;
-                        if !self.is_processing { self.trigger_develop(ui.ctx()); }
+                        if !self.is_processing {
+                            self.trigger_develop(ui.ctx());
+                        }
                     }
                     // 层名 + tag
-                    let name_col = if vis { self.text_primary() } else { self.text_dim() };
+                    let name_col = if vis {
+                        self.text_primary()
+                    } else {
+                        self.text_dim()
+                    };
                     let label = format!("{} {}", layer_tag(&lt), nm);
-                    let galley = ui.painter().layout_no_wrap(label, egui::FontId::proportional(13.0), name_col);
-                    ui.painter().galley(egui::pos2(rect.left() + 30.0, cy - galley.size().y/2.0), galley, egui::Color32::PLACEHOLDER);
+                    let galley = ui.painter().layout_no_wrap(
+                        label,
+                        egui::FontId::proportional(13.0),
+                        name_col,
+                    );
+                    ui.painter().galley(
+                        egui::pos2(rect.left() + 30.0, cy - galley.size().y / 2.0),
+                        galley,
+                        egui::Color32::PLACEHOLDER,
+                    );
                 }
             });
 
@@ -1210,25 +1974,42 @@ impl FilmRustPro {
         let dr = divider_rect.0;
         let painter = ui.painter();
         let hov = divider_rect.1.hovered() || self.dragging_divider;
-        let dc = if hov { self.text_accent() } else { egui::Color32::from_gray(140) };
+        let dc = if hov {
+            self.text_accent()
+        } else {
+            egui::Color32::from_gray(140)
+        };
         // 悬停/拖拽时整块高亮（让用户知道可以抓）
         let div_bg = if hov {
-            if self.dark_mode {Color32::from_rgba_unmultiplied(100,90,60,50)} else {Color32::from_rgba_unmultiplied(180,160,100,60)}
-        } else {Color32::TRANSPARENT};
+            if self.dark_mode {
+                Color32::from_rgba_unmultiplied(100, 90, 60, 50)
+            } else {
+                Color32::from_rgba_unmultiplied(180, 160, 100, 60)
+            }
+        } else {
+            Color32::TRANSPARENT
+        };
         painter.rect_filled(dr, CornerRadius::same(2), div_bg);
         painter.line_segment(
-            [egui::pos2(dr.left() + 16.0, dr.center().y),
-             egui::pos2(dr.right() - 16.0, dr.center().y)],
+            [
+                egui::pos2(dr.left() + 16.0, dr.center().y),
+                egui::pos2(dr.right() - 16.0, dr.center().y),
+            ],
             (if hov { 2.5 } else { 1.2 }, dc),
         );
         for dy in [-2.0, 0.0, 2.0] {
             let cy = dr.center().y + dy * 2.5;
             painter.line_segment(
-                [egui::pos2(dr.center().x - 8.0, cy), egui::pos2(dr.center().x + 8.0, cy)],
+                [
+                    egui::pos2(dr.center().x - 8.0, cy),
+                    egui::pos2(dr.center().x + 8.0, cy),
+                ],
                 (0.7, egui::Color32::from_gray(150)),
             );
         }
-        if divider_rect.1.drag_started() { self.dragging_divider = true; }
+        if divider_rect.1.drag_started() {
+            self.dragging_divider = true;
+        }
         if self.dragging_divider {
             let delta = ui.input(|i| i.pointer.delta()).y;
             if divider_rect.1.dragged() && delta.abs() > 0.5 {
@@ -1236,7 +2017,9 @@ impl FilmRustPro {
                 let clamped = new_list_h.max(120.0).min(total_h - 180.0);
                 self.layer_panel_split = clamped / total_h;
             }
-            if ui.input(|i| i.pointer.any_released()) { self.dragging_divider = false; }
+            if ui.input(|i| i.pointer.any_released()) {
+                self.dragging_divider = false;
+            }
         }
 
         // ── 下半部分：层属性（可滚动，自适应剩余高度）──
@@ -1244,36 +2027,60 @@ impl FilmRustPro {
         // 底部按钮始终固定可见：先扣出按钮高度
         let btn_h = 36.0;
         let scroll_h = (props_h - btn_h).max(80.0);
-        if let Some(i)=self.selected_layer {
+        if let Some(i) = self.selected_layer {
             egui::ScrollArea::vertical()
                 .max_height(scroll_h)
                 .auto_shrink([false; 2])
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
                 .show(ui, |ui| {
-                    ui.label(egui::RichText::new("层属性").size(14.0).color(self.text_accent()));
+                    ui.label(
+                        egui::RichText::new("层属性")
+                            .size(14.0)
+                            .color(self.text_accent()),
+                    );
                     self.render_layer_properties_inner(ui, i);
                     // ── 预设保存/加载（放在层属性下面，共用一个滚动区域）──
-                    ui.add_space(8.0); ui.separator();
-                    ui.horizontal(|ui|{
-                        ui.label(egui::RichText::new("预设").size(14.0).color(self.text_accent()));
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("预设")
+                                .size(14.0)
+                                .color(self.text_accent()),
+                        );
                         if ui.small_button("↻").on_hover_text("刷新预设列表").clicked() {
                             self.user_presets = list_user_presets(&self.presets_dir);
                         }
                     });
                     ui.add_space(2.0);
-                    ui.horizontal(|ui|{
-                        ui.add(egui::TextEdit::singleline(&mut self.preset_name_input).hint_text("预设名称").desired_width(120.0));
-                        if ui.small_button("💾 保存").on_hover_text("保存当前所有图层参数为预设").clicked() {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.preset_name_input)
+                                .hint_text("预设名称")
+                                .desired_width(120.0),
+                        );
+                        if ui
+                            .small_button("💾 保存")
+                            .on_hover_text("保存当前所有图层参数为预设")
+                            .clicked()
+                        {
                             let name = self.preset_name_input.trim().to_string();
                             if !name.is_empty() {
-                                match save_user_preset(&name, &self.layers.layers, &self.presets_dir) {
+                                match save_user_preset(
+                                    &name,
+                                    &self.layers.layers,
+                                    &self.presets_dir,
+                                ) {
                                     Ok(fname) => {
                                         self.status = format!("预设已保存: {}", fname);
                                         self.status_ok = true;
                                         self.user_presets = list_user_presets(&self.presets_dir);
                                         self.preset_name_input.clear();
                                     }
-                                    Err(e) => { self.status = format!("保存预设失败: {}", e); self.status_ok = false; }
+                                    Err(e) => {
+                                        self.status = format!("保存预设失败: {}", e);
+                                        self.status_ok = false;
+                                    }
                                 }
                             }
                         }
@@ -1284,10 +2091,14 @@ impl FilmRustPro {
                         for (i, p) in self.user_presets.iter().enumerate() {
                             ui.horizontal(|ui| {
                                 let nm = p.name.clone();
-                                if ui.selectable_label(false, egui::RichText::new(&nm).size(12.0)).clicked() {
+                                if ui
+                                    .selectable_label(false, egui::RichText::new(&nm).size(12.0))
+                                    .clicked()
+                                {
                                     to_load = Some(p.layers.clone());
                                 }
-                                if ui.small_button("×").on_hover_text("删除此预设").clicked() {
+                                if ui.small_button("×").on_hover_text("删除此预设").clicked()
+                                {
                                     to_del = Some(i);
                                 }
                             });
@@ -1295,95 +2106,211 @@ impl FilmRustPro {
                         if let Some(layers) = to_load {
                             self.layers.layers = layers;
                             self.selected_layer = Some(0);
-                            if !self.is_processing && self.has_processed { self.recomposite_from_cache(); }
-                            self.status = "预设已加载".into(); self.status_ok = true;
+                            if !self.is_processing && self.has_processed {
+                                self.recomposite_from_cache();
+                            }
+                            self.status = "预设已加载".into();
+                            self.status_ok = true;
                         }
                         if let Some(i) = to_del {
                             let name = self.user_presets[i].name.clone();
                             if delete_user_preset(&name, &self.presets_dir).is_ok() {
                                 self.user_presets.remove(i);
-                                self.status = format!("预设已删除: {}", name); self.status_ok = true;
+                                self.status = format!("预设已删除: {}", name);
+                                self.status_ok = true;
                             }
                         }
                     } else {
-                        ui.label(egui::RichText::new("尚无保存的预设。调好参数后输入名称保存").size(11.0).color(self.text_dim()));
+                        ui.label(
+                            egui::RichText::new("尚无保存的预设。调好参数后输入名称保存")
+                                .size(11.0)
+                                .color(self.text_dim()),
+                        );
                     }
                 });
             // 固定按钮区（始终可见）
             ui.add_space(4.0);
-            ui.horizontal(|ui|{
-                let accent=self.text_accent();
-                if ui.button(egui::RichText::new("开始显影").size(16.0).color(accent)).on_hover_text("重新运行胶片物理模拟。微调色彩/肤色/色调分离不需要再点").clicked(){self.trigger_develop(ui.ctx());}
+            ui.horizontal(|ui| {
+                let accent = self.text_accent();
+                if ui
+                    .button(egui::RichText::new("开始显影").size(16.0).color(accent))
+                    .on_hover_text("重新运行胶片物理模拟。微调色彩/肤色/色调分离不需要再点")
+                    .clicked()
+                {
+                    self.trigger_develop(ui.ctx());
+                }
                 if self.has_processed && self.original_tex.is_some() {
-                    let cmp_lbl = if self.comparison_mode { "▌对比中" } else { "▌对比" };
-                    if ui.button(egui::RichText::new(cmp_lbl).size(14.0)).on_hover_text(if self.comparison_mode{"关闭对比模式，退出左右分割对比"}else{"打开对比模式：左=原图 右=处理后，拖拽分割线切换显示区域"}).clicked(){self.comparison_mode = !self.comparison_mode;}
+                    let cmp_lbl = if self.comparison_mode {
+                        "▌对比中"
+                    } else {
+                        "▌对比"
+                    };
+                    if ui
+                        .button(egui::RichText::new(cmp_lbl).size(14.0))
+                        .on_hover_text(if self.comparison_mode {
+                            "关闭对比模式，退出左右分割对比"
+                        } else {
+                            "打开对比模式：左=原图 右=处理后，拖拽分割线切换显示区域"
+                        })
+                        .clicked()
+                    {
+                        self.comparison_mode = !self.comparison_mode;
+                    }
                 }
             });
         }
     }
 
     fn render_layer_properties_inner(&mut self, ui: &mut egui::Ui, idx: usize) {
-        let td=self.text_dim();
+        let td = self.text_dim();
         let mut new_warmth_tint: Option<(f32, f32, f32)> = None;
         let mut dirty_post = false;
-        let layer=&mut self.layers.layers[idx];
+        let layer = &mut self.layers.layers[idx];
         // 混合模式+透明度（所有非基底层层通用）
-        if !matches!(layer.layer_type, LayerType::FilmBase{..}) {
-            ui.horizontal(|ui|{
-                let mode=&mut layer.blend_mode;
-                egui::ComboBox::from_id_salt(format!("bm_p_{}",idx)).width(90.0).selected_text(mode.label()).show_ui(ui,|ui|{
-                    for m in BlendMode::ALL { if ui.selectable_label(*m==*mode,m.label()).clicked(){*mode = *m; dirty_post=true;} }
-                });
-                if ui.add(egui::Slider::new(&mut layer.opacity,0.0..=1.0).text("不透明度")).changed(){dirty_post=true;}
+        if !matches!(layer.layer_type, LayerType::FilmBase { .. }) {
+            ui.horizontal(|ui| {
+                let mode = &mut layer.blend_mode;
+                egui::ComboBox::from_id_salt(format!("bm_p_{}", idx))
+                    .width(90.0)
+                    .selected_text(mode.label())
+                    .show_ui(ui, |ui| {
+                        for m in BlendMode::ALL {
+                            if ui.selectable_label(*m == *mode, m.label()).clicked() {
+                                *mode = *m;
+                                dirty_post = true;
+                            }
+                        }
+                    });
+                if ui
+                    .add(egui::Slider::new(&mut layer.opacity, 0.0..=1.0).text("不透明度"))
+                    .changed()
+                {
+                    dirty_post = true;
+                }
             });
             ui.add_space(4.0);
         }
         match &mut layer.layer_type {
-            LayerType::FilmBase{stock_id,strength,grain,auto_levels}=>{
+            LayerType::FilmBase {
+                stock_id,
+                strength,
+                grain,
+                auto_levels,
+            } => {
                 ui.label("胶片类型:");
-                let cn=self.presets.iter().find(|p|p.id==*stock_id).map(|p|p.name.clone()).unwrap_or_default();
-                let preset_names: Vec<String> = self.presets.iter().map(|p| p.name.clone()).collect();
+                let cn = self
+                    .presets
+                    .iter()
+                    .find(|p| p.id == *stock_id)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_default();
+                let preset_names: Vec<String> =
+                    self.presets.iter().map(|p| p.name.clone()).collect();
                 let mut clicked_idx: Option<usize> = None;
-                egui::ComboBox::from_id_salt("stockp").width(200.0).selected_text(&cn).show_ui(ui,|ui|{
-                    let h = (preset_names.len() as f32 * 24.0 + 8.0).min(320.0);
-                    egui::ScrollArea::vertical().max_height(h).show(ui, |ui| {
-                        for (i, name) in preset_names.iter().enumerate(){
-                            if ui.selectable_label(false, name).clicked(){
-                                clicked_idx = Some(i);
+                egui::ComboBox::from_id_salt("stockp")
+                    .width(200.0)
+                    .selected_text(&cn)
+                    .show_ui(ui, |ui| {
+                        let h = (preset_names.len() as f32 * 24.0 + 8.0).min(320.0);
+                        egui::ScrollArea::vertical().max_height(h).show(ui, |ui| {
+                            for (i, name) in preset_names.iter().enumerate() {
+                                if ui.selectable_label(false, name).clicked() {
+                                    clicked_idx = Some(i);
+                                }
                             }
-                        }
+                        });
                     });
-                });
                 if let Some(i) = clicked_idx {
                     *stock_id = self.presets[i].id.clone();
                     self.style_idx = i;
-                    new_warmth_tint = Some((self.presets[i].default_warmth, self.presets[i].default_tint, self.presets[i].default_saturation));
+                    new_warmth_tint = Some((
+                        self.presets[i].default_warmth,
+                        self.presets[i].default_tint,
+                        self.presets[i].default_saturation,
+                    ));
                 }
-                if let Some(p)=self.presets.get(self.style_idx) {
+                if let Some(p) = self.presets.get(self.style_idx) {
                     ui.add_space(2.0);
-                    ui.label(egui::RichText::new(format!("色调: {}",tone_label(p))).size(13.0).color(tone_color(p)));
+                    ui.label(
+                        egui::RichText::new(format!("色调: {}", tone_label(p)))
+                            .size(13.0)
+                            .color(tone_color(p)),
+                    );
                     ui.label(egui::RichText::new(&p.description).size(12.0).color(td));
                 }
                 ui.add_space(4.0);
-                let _ = ui.add(egui::Slider::new(strength,0.0..=150.0).text("强度").suffix("%")).on_hover_text("越大胶片味越浓。100%=真实胶片效果，150%=强化版");
+                let _ = ui
+                    .add(
+                        egui::Slider::new(strength, 0.0..=150.0)
+                            .text("强度")
+                            .suffix("%"),
+                    )
+                    .on_hover_text("越大胶片味越浓。100%=真实胶片效果，150%=强化版");
                 let _ = ui.add(egui::Slider::new(grain,0.0..=200.0).text("颗粒").suffix("%")).on_hover_text("filmr 物理颗粒。0-5=关闭 6+=filmr 原生颗粒（强度由每款胶卷物理参数决定，不可额外叠加/降噪）");
-                let _ = ui.checkbox(auto_levels,"自动色阶");
-                ui.label(egui::RichText::new("胶片基底变化需点击「开始显影」生效").size(11.0).color(td));
+                let _ = ui.checkbox(auto_levels, "自动色阶");
+                ui.label(
+                    egui::RichText::new("胶片基底变化需点击「开始显影」生效")
+                        .size(11.0)
+                        .color(td),
+                );
             }
-            LayerType::Color{warmth,tint,saturation}=>{
+            LayerType::Color {
+                warmth,
+                tint,
+                saturation,
+            } => {
                 // 色温 - 色彩指示条与滑块等长对齐
-                if slr_bi(ui,warmth,-1.0..=1.0,"色温","向右→画面偏黄偏暖，向左→画面偏蓝偏冷。调节量适中就行，别拉太猛",
-                    egui::Color32::from_rgb(50,90,255),egui::Color32::from_rgb(230,170,50)).changed(){dirty_post=true;}
-                
+                if slr_bi(
+                    ui,
+                    warmth,
+                    -1.0..=1.0,
+                    "色温",
+                    "向右→画面偏黄偏暖，向左→画面偏蓝偏冷。调节量适中就行，别拉太猛",
+                    egui::Color32::from_rgb(50, 90, 255),
+                    egui::Color32::from_rgb(230, 170, 50),
+                )
+                .changed()
+                {
+                    dirty_post = true;
+                }
+
                 // 色调 - 色彩指示条与滑块等长对齐
-                if slr_bi(ui,tint,-1.0..=1.0,"色调","向右→画面偏品红，向左→画面偏绿。微调肤色和天空很管用",
-                    egui::Color32::from_rgb(70,210,70),egui::Color32::from_rgb(230,70,180)).changed(){dirty_post=true;}
-                
+                if slr_bi(
+                    ui,
+                    tint,
+                    -1.0..=1.0,
+                    "色调",
+                    "向右→画面偏品红，向左→画面偏绿。微调肤色和天空很管用",
+                    egui::Color32::from_rgb(70, 210, 70),
+                    egui::Color32::from_rgb(230, 70, 180),
+                )
+                .changed()
+                {
+                    dirty_post = true;
+                }
+
                 // 饱和度 - 色彩指示条与滑块等长对齐
-                if slr_mono(ui,saturation,0.0..=2.0,"饱和度","","1.0=跟原图一样，大于1更鲜艳，小于1更清淡。不会死黑死白，过渡自然",
-                    egui::Color32::from_gray(90),egui::Color32::from_rgb(60,130,250),true).changed(){dirty_post=true;}
+                if slr_mono(
+                    ui,
+                    saturation,
+                    0.0..=2.0,
+                    "饱和度",
+                    "",
+                    "1.0=跟原图一样，大于1更鲜艳，小于1更清淡。不会死黑死白，过渡自然",
+                    egui::Color32::from_gray(90),
+                    egui::Color32::from_rgb(60, 130, 250),
+                    true,
+                )
+                .changed()
+                {
+                    dirty_post = true;
+                }
                 ui.add_space(2.0);
-                if ui.button("↺ 复位默认").on_hover_text("重置为该胶卷的扫片校色默认值").clicked() {
+                if ui
+                    .button("↺ 复位默认")
+                    .on_hover_text("重置为该胶卷的扫片校色默认值")
+                    .clicked()
+                {
                     if let Some(p) = self.presets.get(self.style_idx) {
                         *warmth = p.default_warmth;
                         *tint = p.default_tint;
@@ -1392,39 +2319,164 @@ impl FilmRustPro {
                     }
                 }
                 ui.add_space(2.0);
-                ui.label(egui::RichText::new("调整后自动实时更新效果").size(11.0).color(td));
+                ui.label(
+                    egui::RichText::new("调整后自动实时更新效果")
+                        .size(11.0)
+                        .color(td),
+                );
             }
-            LayerType::Curves{contrast,highlights,shadows}=>{
-                if ui.add(egui::Slider::new(contrast,-1.0..=1.0).text("中间调对比度")).on_hover_text("正=中间调变柔(反差低) 负=中间调变硬(反差高)").changed() { dirty_post=true; }
-                if ui.add(egui::Slider::new(highlights,-1.0..=1.0).text("高光")).on_hover_text("正=高光提亮 负=高光压缩 · 锚点往上拉变亮，往下拉变暗").changed() { dirty_post=true; }
-                if ui.add(egui::Slider::new(shadows,-1.0..=1.0).text("阴影")).on_hover_text("正=阴影提亮(暗部细节) 负=阴影加深 · 锚点往上拉变亮，往下拉变暗").changed() { dirty_post=true; }
+            LayerType::Curves {
+                contrast,
+                highlights,
+                shadows,
+            } => {
+                if ui
+                    .add(egui::Slider::new(contrast, -1.0..=1.0).text("中间调对比度"))
+                    .on_hover_text("正=中间调变柔(反差低) 负=中间调变硬(反差高)")
+                    .changed()
+                {
+                    dirty_post = true;
+                }
+                if ui
+                    .add(egui::Slider::new(highlights, -1.0..=1.0).text("高光"))
+                    .on_hover_text("正=高光提亮 负=高光压缩 · 锚点往上拉变亮，往下拉变暗")
+                    .changed()
+                {
+                    dirty_post = true;
+                }
+                if ui
+                    .add(egui::Slider::new(shadows, -1.0..=1.0).text("阴影"))
+                    .on_hover_text("正=阴影提亮(暗部细节) 负=阴影加深 · 锚点往上拉变亮，往下拉变暗")
+                    .changed()
+                {
+                    dirty_post = true;
+                }
                 ui.add_space(4.0);
-                if ui.button("打开曲线可视化面板").on_hover_text("弹出可拖拽的曲线调整窗口，支持拖拽锚点微调").clicked(){self.show_curves_overlay=true;}
-            }
-            LayerType::SkinHsl{enabled,remove_yellow,reduce_green,add_pink,add_red,skin_brightness}=>{
-                ui.horizontal(|ui|{
-                    ui.checkbox(enabled,"启用肤色优化");
-                    if *enabled { ui.label(egui::RichText::new("仅在肤色色相范围内微调，不影响其他颜色").size(11.0).color(td)); }
-                });
-                if *enabled {
-                    if slr_mono(ui,remove_yellow,0.0..=100.0,"去黄","","降低橙色饱和度+色相偏红 · 改善偏黄肤色",
-                        egui::Color32::from_rgb(200,160,100),egui::Color32::from_rgb(255,200,160),true).changed(){dirty_post=true;}
-                    if slr_mono(ui,reduce_green,0.0..=100.0,"减绿","","胶片平光常偏绿 · 精准降G通道补正肤色",
-                        egui::Color32::from_rgb(120,180,120),egui::Color32::from_rgb(240,200,160),true).changed(){dirty_post=true;}
-                    if slr_mono(ui,add_pink,0.0..=100.0,"加粉","","微增红+蓝 → 皮肤粉润 · 适合人像",
-                        egui::Color32::from_rgb(190,140,150),egui::Color32::from_rgb(255,190,200),true).changed(){dirty_post=true;}
-                    if slr_mono(ui,add_red,0.0..=100.0,"加红","","微增红色通道 → 暖调血色 · 不过度",
-                        egui::Color32::from_rgb(160,100,100),egui::Color32::from_rgb(240,140,120),true).changed(){dirty_post=true;}
-                    if slr_bi(ui,skin_brightness,-50.0..=50.0,"亮度","正=提亮肤色 负=压暗肤色 · 中间调为主",
-                        egui::Color32::from_gray(100),egui::Color32::from_gray(240)).changed(){dirty_post=true;}
+                if ui
+                    .button("打开曲线可视化面板")
+                    .on_hover_text("弹出可拖拽的曲线调整窗口，支持拖拽锚点微调")
+                    .clicked()
+                {
+                    self.show_curves_overlay = true;
                 }
             }
-            LayerType::ModernTone{enabled,style_idx,strength,shadow_lift,highlight_compress,midtone_contrast,
-                shadow_hue,shadow_sat,highlight_hue,highlight_sat,sat_high_suppress,warmth_shift,fine_grain}=>{
-                ui.horizontal(|ui|{
-                    ui.checkbox(enabled,"启用现代色调");
+            LayerType::SkinHsl {
+                enabled,
+                remove_yellow,
+                reduce_green,
+                add_pink,
+                add_red,
+                skin_brightness,
+            } => {
+                ui.horizontal(|ui| {
+                    ui.checkbox(enabled, "启用肤色优化");
                     if *enabled {
-                        ui.label(egui::RichText::new("感知建模非线性调色 · 四种人气风格").size(11.0).color(td));
+                        ui.label(
+                            egui::RichText::new("仅在肤色色相范围内微调，不影响其他颜色")
+                                .size(11.0)
+                                .color(td),
+                        );
+                    }
+                });
+                if *enabled {
+                    if slr_mono(
+                        ui,
+                        remove_yellow,
+                        0.0..=100.0,
+                        "去黄",
+                        "",
+                        "降低橙色饱和度+色相偏红 · 改善偏黄肤色",
+                        egui::Color32::from_rgb(200, 160, 100),
+                        egui::Color32::from_rgb(255, 200, 160),
+                        true,
+                    )
+                    .changed()
+                    {
+                        dirty_post = true;
+                    }
+                    if slr_mono(
+                        ui,
+                        reduce_green,
+                        0.0..=100.0,
+                        "减绿",
+                        "",
+                        "胶片平光常偏绿 · 精准降G通道补正肤色",
+                        egui::Color32::from_rgb(120, 180, 120),
+                        egui::Color32::from_rgb(240, 200, 160),
+                        true,
+                    )
+                    .changed()
+                    {
+                        dirty_post = true;
+                    }
+                    if slr_mono(
+                        ui,
+                        add_pink,
+                        0.0..=100.0,
+                        "加粉",
+                        "",
+                        "微增红+蓝 → 皮肤粉润 · 适合人像",
+                        egui::Color32::from_rgb(190, 140, 150),
+                        egui::Color32::from_rgb(255, 190, 200),
+                        true,
+                    )
+                    .changed()
+                    {
+                        dirty_post = true;
+                    }
+                    if slr_mono(
+                        ui,
+                        add_red,
+                        0.0..=100.0,
+                        "加红",
+                        "",
+                        "微增红色通道 → 暖调血色 · 不过度",
+                        egui::Color32::from_rgb(160, 100, 100),
+                        egui::Color32::from_rgb(240, 140, 120),
+                        true,
+                    )
+                    .changed()
+                    {
+                        dirty_post = true;
+                    }
+                    if slr_bi(
+                        ui,
+                        skin_brightness,
+                        -50.0..=50.0,
+                        "亮度",
+                        "正=提亮肤色 负=压暗肤色 · 中间调为主",
+                        egui::Color32::from_gray(100),
+                        egui::Color32::from_gray(240),
+                    )
+                    .changed()
+                    {
+                        dirty_post = true;
+                    }
+                }
+            }
+            LayerType::ModernTone {
+                enabled,
+                style_idx,
+                strength,
+                shadow_lift,
+                highlight_compress,
+                midtone_contrast,
+                shadow_hue,
+                shadow_sat,
+                highlight_hue,
+                highlight_sat,
+                sat_high_suppress,
+                warmth_shift,
+                fine_grain,
+            } => {
+                ui.horizontal(|ui| {
+                    ui.checkbox(enabled, "启用现代色调");
+                    if *enabled {
+                        ui.label(
+                            egui::RichText::new("感知建模非线性调色 · 四种人气风格")
+                                .size(11.0)
+                                .color(td),
+                        );
                     }
                 });
                 if *enabled {
@@ -1445,89 +2497,374 @@ impl FilmRustPro {
                         *style_idx = new_idx as u8;
                         // 应用对应预设
                         match new_idx {
-                            0 => { // 日系空气: 轻微青蓝阴影+暖黄高光, 轻抬暗, 轻压高饱和, 极细颗粒 (通用安全)
-                                *shadow_lift=12.0;*highlight_compress=18.0;*midtone_contrast= -8.0;
-                                *shadow_hue=210.0;*shadow_sat=6.0;*highlight_hue=40.0;*highlight_sat=4.0;
-                                *sat_high_suppress=20.0;*warmth_shift=3.0;*fine_grain=12.0;
+                            0 => {
+                                // 日系空气: 轻微青蓝阴影+暖黄高光, 轻抬暗, 轻压高饱和, 极细颗粒 (通用安全)
+                                *shadow_lift = 12.0;
+                                *highlight_compress = 18.0;
+                                *midtone_contrast = -8.0;
+                                *shadow_hue = 210.0;
+                                *shadow_sat = 6.0;
+                                *highlight_hue = 40.0;
+                                *highlight_sat = 4.0;
+                                *sat_high_suppress = 20.0;
+                                *warmth_shift = 3.0;
+                                *fine_grain = 12.0;
                             }
-                            1 => { // 韩系奶油: 粉品阴影+粉橙高光, 中等抬暗, 减对比, 暖色
-                                *shadow_lift=20.0;*highlight_compress=15.0;*midtone_contrast= -18.0;
-                                *shadow_hue=310.0;*shadow_sat=7.0;*highlight_hue=25.0;*highlight_sat=8.0;
-                                *sat_high_suppress=28.0;*warmth_shift=8.0;*fine_grain=5.0;
+                            1 => {
+                                // 韩系奶油: 粉品阴影+粉橙高光, 中等抬暗, 减对比, 暖色
+                                *shadow_lift = 20.0;
+                                *highlight_compress = 15.0;
+                                *midtone_contrast = -18.0;
+                                *shadow_hue = 310.0;
+                                *shadow_sat = 7.0;
+                                *highlight_hue = 25.0;
+                                *highlight_sat = 8.0;
+                                *sat_high_suppress = 28.0;
+                                *warmth_shift = 8.0;
+                                *fine_grain = 5.0;
                             }
-                            2 => { // 清透冷白: 蓝青阴影+冷白高光, 轻抬暗, 轻压高, 轻减对比, 冷色
-                                *shadow_lift=10.0;*highlight_compress=25.0;*midtone_contrast= -3.0;
-                                *shadow_hue=220.0;*shadow_sat=5.0;*highlight_hue=205.0;*highlight_sat=3.0;
-                                *sat_high_suppress=18.0;*warmth_shift= -10.0;*fine_grain=8.0;
+                            2 => {
+                                // 清透冷白: 蓝青阴影+冷白高光, 轻抬暗, 轻压高, 轻减对比, 冷色
+                                *shadow_lift = 10.0;
+                                *highlight_compress = 25.0;
+                                *midtone_contrast = -3.0;
+                                *shadow_hue = 220.0;
+                                *shadow_sat = 5.0;
+                                *highlight_hue = 205.0;
+                                *highlight_sat = 3.0;
+                                *sat_high_suppress = 18.0;
+                                *warmth_shift = -10.0;
+                                *fine_grain = 8.0;
                             }
-                            3 => { // 美式复古咖: 青蓝阴影+橙咖高光, 轻压暗(加对比), 暖色, 颗粒明显
-                                *shadow_lift= -5.0;*highlight_compress=12.0;*midtone_contrast=12.0;
-                                *shadow_hue=215.0;*shadow_sat=10.0;*highlight_hue=35.0;*highlight_sat=12.0;
-                                *sat_high_suppress=15.0;*warmth_shift=12.0;*fine_grain=30.0;
+                            3 => {
+                                // 美式复古咖: 青蓝阴影+橙咖高光, 轻压暗(加对比), 暖色, 颗粒明显
+                                *shadow_lift = -5.0;
+                                *highlight_compress = 12.0;
+                                *midtone_contrast = 12.0;
+                                *shadow_hue = 215.0;
+                                *shadow_sat = 10.0;
+                                *highlight_hue = 35.0;
+                                *highlight_sat = 12.0;
+                                *sat_high_suppress = 15.0;
+                                *warmth_shift = 12.0;
+                                *fine_grain = 30.0;
                             }
-                            _=>{}
+                            _ => {}
                         }
-                        dirty_post=true;
+                        dirty_post = true;
                     }
-                    if slr_mono(ui,strength,0.0..=150.0,"强度","%","整体风格浓度 · 100为预设原生强度 · 150可出重口味",
-                        egui::Color32::from_gray(120),egui::Color32::from_gray(240),false).changed(){dirty_post=true;}
+                    if slr_mono(
+                        ui,
+                        strength,
+                        0.0..=150.0,
+                        "强度",
+                        "%",
+                        "整体风格浓度 · 100为预设原生强度 · 150可出重口味",
+                        egui::Color32::from_gray(120),
+                        egui::Color32::from_gray(240),
+                        false,
+                    )
+                    .changed()
+                    {
+                        dirty_post = true;
+                    }
 
-                    if slr_bi(ui,shadow_lift,-50.0..=50.0,"暗部","抬升/压暗暗部 · 空气/奶油=抬 · 复古=压",
-                        egui::Color32::from_rgb(40,40,80),egui::Color32::from_rgb(255,220,180)).changed(){dirty_post=true;}
-                    if slr_mono(ui,highlight_compress,0.0..=100.0,"高光","","高光软压缩（胶片shoulder）· 越大高光越柔",
-                        egui::Color32::from_gray(180),egui::Color32::from_gray(255),false).changed(){dirty_post=true;}
-                    if slr_bi(ui,midtone_contrast,-50.0..=50.0,"对比","中间调对比 · 负=奶油/空气 · 正=复古浓色",
-                        egui::Color32::from_gray(80),egui::Color32::from_gray(240)).changed(){dirty_post=true;}
-                    if slr_hue(ui,shadow_hue,"阴影色相","暗部着色主色相").changed(){dirty_post=true;}
-                    if slr_sat(ui,shadow_sat,0.0..=50.0,"阴影饱和","%","阴影着色强度",*shadow_hue).changed(){dirty_post=true;}
-                    if slr_hue(ui,highlight_hue,"高光色相","高光着色主色相").changed(){dirty_post=true;}
-                    if slr_sat(ui,highlight_sat,0.0..=50.0,"高光饱和","%","高光着色强度",*highlight_hue).changed(){dirty_post=true;}
-                    if slr_mono(ui,sat_high_suppress,0.0..=100.0,"压艳","%","高饱和区压缩 · 防霓虹溢出",
-                        egui::Color32::from_rgb(200,60,60),egui::Color32::from_gray(180),true).changed(){dirty_post=true;}
-                    if slr_bi(ui,warmth_shift,-30.0..=30.0,"色温","整体暖/冷微调 · 正暖负冷",
-                        egui::Color32::from_rgb(80,130,200),egui::Color32::from_rgb(240,180,100)).changed(){dirty_post=true;}
-                    if slr_mono(ui,fine_grain,0.0..=100.0,"细颗粒","","细颗粒（中间调为主）· 复古=55",
-                        egui::Color32::from_gray(80),egui::Color32::from_gray(200),false).changed(){dirty_post=true;}
+                    if slr_bi(
+                        ui,
+                        shadow_lift,
+                        -50.0..=50.0,
+                        "暗部",
+                        "抬升/压暗暗部 · 空气/奶油=抬 · 复古=压",
+                        egui::Color32::from_rgb(40, 40, 80),
+                        egui::Color32::from_rgb(255, 220, 180),
+                    )
+                    .changed()
+                    {
+                        dirty_post = true;
+                    }
+                    if slr_mono(
+                        ui,
+                        highlight_compress,
+                        0.0..=100.0,
+                        "高光",
+                        "",
+                        "高光软压缩（胶片shoulder）· 越大高光越柔",
+                        egui::Color32::from_gray(180),
+                        egui::Color32::from_gray(255),
+                        false,
+                    )
+                    .changed()
+                    {
+                        dirty_post = true;
+                    }
+                    if slr_bi(
+                        ui,
+                        midtone_contrast,
+                        -50.0..=50.0,
+                        "对比",
+                        "中间调对比 · 负=奶油/空气 · 正=复古浓色",
+                        egui::Color32::from_gray(80),
+                        egui::Color32::from_gray(240),
+                    )
+                    .changed()
+                    {
+                        dirty_post = true;
+                    }
+                    if slr_hue(ui, shadow_hue, "阴影色相", "暗部着色主色相").changed() {
+                        dirty_post = true;
+                    }
+                    if slr_sat(
+                        ui,
+                        shadow_sat,
+                        0.0..=50.0,
+                        "阴影饱和",
+                        "%",
+                        "阴影着色强度",
+                        *shadow_hue,
+                    )
+                    .changed()
+                    {
+                        dirty_post = true;
+                    }
+                    if slr_hue(ui, highlight_hue, "高光色相", "高光着色主色相").changed()
+                    {
+                        dirty_post = true;
+                    }
+                    if slr_sat(
+                        ui,
+                        highlight_sat,
+                        0.0..=50.0,
+                        "高光饱和",
+                        "%",
+                        "高光着色强度",
+                        *highlight_hue,
+                    )
+                    .changed()
+                    {
+                        dirty_post = true;
+                    }
+                    if slr_mono(
+                        ui,
+                        sat_high_suppress,
+                        0.0..=100.0,
+                        "压艳",
+                        "%",
+                        "高饱和区压缩 · 防霓虹溢出",
+                        egui::Color32::from_rgb(200, 60, 60),
+                        egui::Color32::from_gray(180),
+                        true,
+                    )
+                    .changed()
+                    {
+                        dirty_post = true;
+                    }
+                    if slr_bi(
+                        ui,
+                        warmth_shift,
+                        -30.0..=30.0,
+                        "色温",
+                        "整体暖/冷微调 · 正暖负冷",
+                        egui::Color32::from_rgb(80, 130, 200),
+                        egui::Color32::from_rgb(240, 180, 100),
+                    )
+                    .changed()
+                    {
+                        dirty_post = true;
+                    }
+                    if slr_mono(
+                        ui,
+                        fine_grain,
+                        0.0..=100.0,
+                        "细颗粒",
+                        "",
+                        "细颗粒（中间调为主）· 复古=55",
+                        egui::Color32::from_gray(80),
+                        egui::Color32::from_gray(200),
+                        false,
+                    )
+                    .changed()
+                    {
+                        dirty_post = true;
+                    }
                 }
             }
-            LayerType::SplitTone{enabled,highlight_hue,highlight_saturation,shadow_hue,shadow_saturation,balance,strength}=>{
-                ui.horizontal(|ui|{
-                    ui.checkbox(enabled,"启用色调分离");
-                    if *enabled { ui.label(egui::RichText::new("高光暖橙+阴影青绿 = 经典胶片氛围").size(11.0).color(td)); }
+            LayerType::SplitTone {
+                enabled,
+                highlight_hue,
+                highlight_saturation,
+                shadow_hue,
+                shadow_saturation,
+                balance,
+                strength,
+            } => {
+                ui.horizontal(|ui| {
+                    ui.checkbox(enabled, "启用色调分离");
+                    if *enabled {
+                        ui.label(
+                            egui::RichText::new("高光暖橙+阴影青绿 = 经典胶片氛围")
+                                .size(11.0)
+                                .color(td),
+                        );
+                    }
                 });
                 if *enabled {
-                    if slr_hue(ui,highlight_hue,"高光色相","高光区域的主色调。Portra=41°橙，Pro400H=52°暖黄").changed(){dirty_post=true;}
-                    if slr_sat(ui,highlight_saturation,0.0..=100.0,"高光饱和","%","高光色调的浓度。越大越明显",*highlight_hue).changed(){dirty_post=true;}
-                    if slr_hue(ui,shadow_hue,"阴影色相","阴影区域的主色调。Portra=190°青绿，800T=220°蓝").changed(){dirty_post=true;}
-                    if slr_sat(ui,shadow_saturation,0.0..=100.0,"阴影饱和","%","阴影色调的浓度",*shadow_hue).changed(){dirty_post=true;}
-                    if slr_bal(ui,balance,-100.0..=100.0,"平衡","负=阴影着色更明显，正=高光着色更明显",*shadow_hue,*highlight_hue).changed(){dirty_post=true;}
-                    if slr_mono(ui,strength,0.0..=100.0,"强度","%","色调分离整体强度",
-                        egui::Color32::from_gray(50),egui::Color32::from_gray(200),true).changed(){dirty_post=true;}
+                    if slr_hue(
+                        ui,
+                        highlight_hue,
+                        "高光色相",
+                        "高光区域的主色调。Portra=41°橙，Pro400H=52°暖黄",
+                    )
+                    .changed()
+                    {
+                        dirty_post = true;
+                    }
+                    if slr_sat(
+                        ui,
+                        highlight_saturation,
+                        0.0..=100.0,
+                        "高光饱和",
+                        "%",
+                        "高光色调的浓度。越大越明显",
+                        *highlight_hue,
+                    )
+                    .changed()
+                    {
+                        dirty_post = true;
+                    }
+                    if slr_hue(
+                        ui,
+                        shadow_hue,
+                        "阴影色相",
+                        "阴影区域的主色调。Portra=190°青绿，800T=220°蓝",
+                    )
+                    .changed()
+                    {
+                        dirty_post = true;
+                    }
+                    if slr_sat(
+                        ui,
+                        shadow_saturation,
+                        0.0..=100.0,
+                        "阴影饱和",
+                        "%",
+                        "阴影色调的浓度",
+                        *shadow_hue,
+                    )
+                    .changed()
+                    {
+                        dirty_post = true;
+                    }
+                    if slr_bal(
+                        ui,
+                        balance,
+                        -100.0..=100.0,
+                        "平衡",
+                        "负=阴影着色更明显，正=高光着色更明显",
+                        *shadow_hue,
+                        *highlight_hue,
+                    )
+                    .changed()
+                    {
+                        dirty_post = true;
+                    }
+                    if slr_mono(
+                        ui,
+                        strength,
+                        0.0..=100.0,
+                        "强度",
+                        "%",
+                        "色调分离整体强度",
+                        egui::Color32::from_gray(50),
+                        egui::Color32::from_gray(200),
+                        true,
+                    )
+                    .changed()
+                    {
+                        dirty_post = true;
+                    }
                 }
             }
-            LayerType::Sharp{enabled,amount,radius,auto_radius}=>{
-                ui.horizontal(|ui|{
-                    ui.checkbox(enabled,"启用锐化");
-                    if *enabled { ui.label(egui::RichText::new("仅导出生效，预览不显示锐化").size(11.0).color(td)); }
+            LayerType::Sharp {
+                enabled,
+                amount,
+                radius,
+                auto_radius,
+            } => {
+                ui.horizontal(|ui| {
+                    ui.checkbox(enabled, "启用锐化");
+                    if *enabled {
+                        ui.label(
+                            egui::RichText::new("仅导出生效，预览不显示锐化")
+                                .size(11.0)
+                                .color(td),
+                        );
+                    }
                 });
                 if *enabled {
-                    if ui.add(egui::Slider::new(amount,0.0..=100.0).text("锐化量")).on_hover_text("越大越锐利，建议20-40，过大出现白边").changed() { dirty_post=true; }
-                    ui.checkbox(auto_radius,"自动半径（按分辨率推算）");
-                    if !*auto_radius && ui.add(egui::Slider::new(radius,0.5..=3.0).text("半径").suffix("px")).on_hover_text("模糊半径：小=微细节锐化，大=轮廓锐化").changed() { dirty_post=true; }
+                    if ui
+                        .add(egui::Slider::new(amount, 0.0..=100.0).text("锐化量"))
+                        .on_hover_text("越大越锐利，建议20-40，过大出现白边")
+                        .changed()
+                    {
+                        dirty_post = true;
+                    }
+                    ui.checkbox(auto_radius, "自动半径（按分辨率推算）");
+                    if !*auto_radius
+                        && ui
+                            .add(
+                                egui::Slider::new(radius, 0.5..=3.0)
+                                    .text("半径")
+                                    .suffix("px"),
+                            )
+                            .on_hover_text("模糊半径：小=微细节锐化，大=轮廓锐化")
+                            .changed()
+                    {
+                        dirty_post = true;
+                    }
                 }
             }
-            LayerType::Grain{amount,size}=>{
-                if ui.add(egui::Slider::new(amount,0.0..=1.0).text("颗粒量")).on_hover_text("创意颗粒叠加，独立于 filmr 物理颗粒。0=无颗粒，1=强颗粒").changed(){dirty_post=true;}
-                if ui.add(egui::Slider::new(size,0.0..=1.0).text("颗粒大小")).on_hover_text("控制颗粒尺寸（当前为固定大小，预留参数）").changed(){dirty_post=true;}
+            LayerType::Grain { amount, size } => {
+                if ui
+                    .add(egui::Slider::new(amount, 0.0..=1.0).text("颗粒量"))
+                    .on_hover_text("创意颗粒叠加，独立于 filmr 物理颗粒。0=无颗粒，1=强颗粒")
+                    .changed()
+                {
+                    dirty_post = true;
+                }
+                if ui
+                    .add(egui::Slider::new(size, 0.0..=1.0).text("颗粒大小"))
+                    .on_hover_text("控制颗粒尺寸（当前为固定大小，预留参数）")
+                    .changed()
+                {
+                    dirty_post = true;
+                }
             }
-            LayerType::Vignette{strength,halation}=>{
-                if ui.add(egui::Slider::new(strength,0.0..=1.0).text("暗角强度")).on_hover_text("边缘压暗程度。0=无暗角，1=强暗角。叠加在 filmr 自带暗角之上").changed(){dirty_post=true;}
-                if ui.add(egui::Slider::new(halation,0.0..=1.0).text("光晕")).on_hover_text("高光扩散效果，模拟胶片基底反射。仅影响高光区域").changed(){dirty_post=true;}
+            LayerType::Vignette { strength, halation } => {
+                if ui
+                    .add(egui::Slider::new(strength, 0.0..=1.0).text("暗角强度"))
+                    .on_hover_text("边缘压暗程度。0=无暗角，1=强暗角。叠加在 filmr 自带暗角之上")
+                    .changed()
+                {
+                    dirty_post = true;
+                }
+                if ui
+                    .add(egui::Slider::new(halation, 0.0..=1.0).text("光晕"))
+                    .on_hover_text("高光扩散效果，模拟胶片基底反射。仅影响高光区域")
+                    .changed()
+                {
+                    dirty_post = true;
+                }
             }
-            LayerType::LightLeak{intensity,hue,saturation,lightness,position}=>{
+            LayerType::LightLeak {
+                intensity,
+                hue,
+                saturation,
+                lightness,
+                position,
+            } => {
                 if ui.add(egui::Slider::new(intensity,0.0..=1.0).text("漏光强度"))
                     .on_hover_text("模拟胶片暗盒/后背漏光效果\n\n• 0.1~0.3 轻微漏光：边缘微泛光，模拟老胶片\n• 0.4~0.6 中度漏光：明显角部落光，复古感强\n• 0.7~1.0 强烈漏光：大面积泛光，艺术化效果").changed(){dirty_post=true;}
-                
+
                 // 位置选择（用按钮组代替下拉，更直观）
                 ui.label(egui::RichText::new("漏光方向:").size(11.0).color(td));
                 let positions = ["↖ 左上", "↗ 右上", "↙ 左下", "↘ 右下", "✦ 四角"];
@@ -1536,7 +2873,7 @@ impl FilmRustPro {
                     "右上角漏光：模拟相机右侧缝隙进光",
                     "左下角漏光：模拟胶片从暗盒底部进光",
                     "右下角漏光：模拟相机右下角缝隙进光",
-                    "四角同时漏光：模拟严重漏光/胶片后背未卡紧"
+                    "四角同时漏光：模拟严重漏光/胶片后背未卡紧",
                 ];
                 ui.horizontal(|ui| {
                     for (i, name) in positions.iter().enumerate() {
@@ -1553,47 +2890,100 @@ impl FilmRustPro {
                     }
                 });
                 ui.add_space(4.0);
-                
+
                 // 色相 - 色彩指示条与滑块等长对齐
                 if slr_hue(ui,hue,"色相",
                     "胶片漏光常见色相参考：\n\n• 0°/360° 红色 — 暗房安全灯漏光\n• 30° 暖橙色 — Kodak 胶片经典漏光\n• 45° 琥珀黄 — 传统暗房泛黄漏光\n• 60° 金黄色 — 夕阳/暖调漏光\n• 120° 绿色 — 少见，创意效果\n• 210° 冷蓝色 — 黑白胶片安全灯\n• 300° 品红色 — 彩色负片偏色漏光").changed(){dirty_post=true;}
-                
+
                 // 饱和度 - 色彩指示条与滑块等长对齐
                 if slr_mono(ui,saturation,0.0..=1.0,"饱和度","","胶片漏光建议：\n\n• 0.5~0.8 中等饱和 — 最自然，模拟真实漏光\n• 0.9~1.0 高饱和 — 强烈色彩，艺术化\n• 0.0~0.3 低饱和 — 接近白色泛光",
                     egui::Color32::from_gray(128),egui::Color32::from_rgb(255,128,128),true).changed(){dirty_post=true;}
-                
+
                 // 亮度 - 色彩指示条与滑块等长对齐
                 if slr_bi(ui,lightness,0.0..=1.0,"亮度","胶片漏光建议：\n\n• 0.5~0.7 中亮 — 最自然，模拟真实光线渗入\n• 0.8~1.0 高亮 — 强烈泛光效果\n• 0.3~0.4 低亮 — 暗沉漏光，复古感强",
                     egui::Color32::BLACK,egui::Color32::WHITE).changed(){dirty_post=true;}
             }
-            _ => {}  // 兼容旧版 Blur 层
+            _ => {} // 兼容旧版 Blur 层
         }
         // 切换预设后更新所有默认值（可能涉及多层的联动）
         if let Some((w, t, s)) = new_warmth_tint {
             for l in &mut self.layers.layers {
                 match &mut l.layer_type {
-                    LayerType::Color{ warmth, tint, saturation } => { *warmth = w; *tint = t; *saturation = s; }
-                    LayerType::SkinHsl { enabled, remove_yellow, reduce_green, add_pink, add_red, skin_brightness } => {
-                        *enabled = false; *remove_yellow = 0.0; *reduce_green = 0.0;
-                        *add_pink = 0.0; *add_red = 0.0; *skin_brightness = 0.0;
+                    LayerType::Color {
+                        warmth,
+                        tint,
+                        saturation,
+                    } => {
+                        *warmth = w;
+                        *tint = t;
+                        *saturation = s;
                     }
-                    LayerType::ModernTone { enabled, style_idx, strength, shadow_lift, highlight_compress,
-                        midtone_contrast, shadow_hue, shadow_sat, highlight_hue, highlight_sat,
-                        sat_high_suppress, warmth_shift, fine_grain } => {
-                        *enabled = false; *style_idx = 0; *strength = 100.0;
-                        *shadow_lift = 12.0; *highlight_compress = 18.0; *midtone_contrast = -8.0;
-                        *shadow_hue = 210.0; *shadow_sat = 6.0;
-                        *highlight_hue = 40.0; *highlight_sat = 4.0;
-                        *sat_high_suppress = 20.0; *warmth_shift = 3.0; *fine_grain = 12.0;
-                    }
-                    LayerType::SplitTone { enabled, highlight_hue, highlight_saturation, shadow_hue, shadow_saturation, balance, strength } => {
+                    LayerType::SkinHsl {
+                        enabled,
+                        remove_yellow,
+                        reduce_green,
+                        add_pink,
+                        add_red,
+                        skin_brightness,
+                    } => {
                         *enabled = false;
-                        *highlight_hue = 0.0; *highlight_saturation = 0.0;
-                        *shadow_hue = 0.0; *shadow_saturation = 0.0;
-                        *balance = 0.0; *strength = 0.0;
+                        *remove_yellow = 0.0;
+                        *reduce_green = 0.0;
+                        *add_pink = 0.0;
+                        *add_red = 0.0;
+                        *skin_brightness = 0.0;
                     }
-                    LayerType::Sharp { enabled, amount, .. } => {
-                        *enabled = false; *amount = 0.0;
+                    LayerType::ModernTone {
+                        enabled,
+                        style_idx,
+                        strength,
+                        shadow_lift,
+                        highlight_compress,
+                        midtone_contrast,
+                        shadow_hue,
+                        shadow_sat,
+                        highlight_hue,
+                        highlight_sat,
+                        sat_high_suppress,
+                        warmth_shift,
+                        fine_grain,
+                    } => {
+                        *enabled = false;
+                        *style_idx = 0;
+                        *strength = 100.0;
+                        *shadow_lift = 12.0;
+                        *highlight_compress = 18.0;
+                        *midtone_contrast = -8.0;
+                        *shadow_hue = 210.0;
+                        *shadow_sat = 6.0;
+                        *highlight_hue = 40.0;
+                        *highlight_sat = 4.0;
+                        *sat_high_suppress = 20.0;
+                        *warmth_shift = 3.0;
+                        *fine_grain = 12.0;
+                    }
+                    LayerType::SplitTone {
+                        enabled,
+                        highlight_hue,
+                        highlight_saturation,
+                        shadow_hue,
+                        shadow_saturation,
+                        balance,
+                        strength,
+                    } => {
+                        *enabled = false;
+                        *highlight_hue = 0.0;
+                        *highlight_saturation = 0.0;
+                        *shadow_hue = 0.0;
+                        *shadow_saturation = 0.0;
+                        *balance = 0.0;
+                        *strength = 0.0;
+                    }
+                    LayerType::Sharp {
+                        enabled, amount, ..
+                    } => {
+                        *enabled = false;
+                        *amount = 0.0;
                     }
                     _ => {}
                 }
@@ -1604,7 +2994,7 @@ impl FilmRustPro {
             self.dirty_post = true;
             self.last_slider_release = Some(Instant::now());
         }
-        
+
         // 检查是否需要执行延迟合成（松手后 300ms 无新操作）
         if let Some(last_release) = self.last_slider_release {
             if last_release.elapsed().as_millis() >= 300 && self.dirty_post {
@@ -1626,57 +3016,118 @@ impl FilmRustPro {
 // ============================================================
 impl FilmRustPro {
     fn render_curves_overlay(&mut self, ui: &mut egui::Ui) {
-        let bg = if self.dark_mode { Color32::from_rgba_unmultiplied(18,22,30,15) } else { Color32::from_rgba_unmultiplied(240,240,248,15) };
+        let bg = if self.dark_mode {
+            Color32::from_rgba_unmultiplied(18, 22, 30, 15)
+        } else {
+            Color32::from_rgba_unmultiplied(240, 240, 248, 15)
+        };
         let sr = ui.ctx().content_rect();
-        let ww = 560.0_f32; let wh = 480.0_f32;
-        let pos = [(sr.center().x - ww/2.0).max(0.0), (sr.center().y - wh/2.0).max(0.0)];
+        let ww = 560.0_f32;
+        let wh = 480.0_f32;
+        let pos = [
+            (sr.center().x - ww / 2.0).max(0.0),
+            (sr.center().y - wh / 2.0).max(0.0),
+        ];
         let win = Window::new("曲线调整")
-            .collapsible(false).resizable(true)
-            .default_size([ww, wh]).min_size([380.0, 340.0])
+            .collapsible(false)
+            .resizable(true)
+            .default_size([ww, wh])
+            .min_size([380.0, 340.0])
             .default_pos(pos)
-            .frame(Frame{fill:bg,corner_radius:CornerRadius::same(12u8),inner_margin:egui::Margin::same(14),..Default::default()});
-        let ci = self.selected_layer.filter(|&i|matches!(self.layers.layers.get(i).map(|l|&l.layer_type),Some(LayerType::Curves{..})));
+            .frame(Frame {
+                fill: bg,
+                corner_radius: CornerRadius::same(12u8),
+                inner_margin: egui::Margin::same(14),
+                ..Default::default()
+            });
+        let ci = self.selected_layer.filter(|&i| {
+            matches!(
+                self.layers.layers.get(i).map(|l| &l.layer_type),
+                Some(LayerType::Curves { .. })
+            )
+        });
         let mut close = false;
         win.show(ui.ctx(), |ui| {
-            ui.horizontal(|ui|{
-                ui.heading(egui::RichText::new("曲线调整").size(16.0).color(self.text_accent()));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
-                    if ui.button("关闭").clicked(){close=true;}
+            ui.horizontal(|ui| {
+                ui.heading(
+                    egui::RichText::new("曲线调整")
+                        .size(16.0)
+                        .color(self.text_accent()),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("关闭").clicked() {
+                        close = true;
+                    }
                 });
             });
-            ui.label(egui::RichText::new("上下拖拽=亮度 左右拖拽=范围 | ↑=亮 ↓=暗").size(11.0).color(self.text_dim()));
+            ui.label(
+                egui::RichText::new("上下拖拽=亮度 左右拖拽=范围 | ↑=亮 ↓=暗")
+                    .size(11.0)
+                    .color(self.text_dim()),
+            );
             if let Some(idx) = ci {
-                let gcol = self.text_dim(); let ac = self.text_accent();
-                if let LayerType::Curves{contrast,highlights,shadows}=&mut self.layers.layers[idx].layer_type {
+                let gcol = self.text_dim();
+                let ac = self.text_accent();
+                if let LayerType::Curves {
+                    contrast,
+                    highlights,
+                    shadows,
+                } = &mut self.layers.layers[idx].layer_type
+                {
                     let cx = self.curve_cx;
                     let y0 = (0.25 - *shadows * 0.25).clamp(0.0, 1.0);
                     let y1 = (0.50 - *contrast * 0.25).clamp(0.0, 1.0);
                     let y2 = (0.75 + *highlights * 0.25).clamp(0.0, 1.0);
                     let cs = ui.available_size().x.min(480.0);
-                    let (rect, resp) = ui.allocate_exact_size(vec2(cs, cs), egui::Sense::click_and_drag());
-                    let p = ui.painter(); let tl = rect.min; let w = rect.width(); let h = rect.height();
-                    p.rect_filled(rect, CornerRadius::same(6u8), Color32::from_rgba_unmultiplied(0,0,0,15));
-                    p.rect_stroke(rect, CornerRadius::same(6u8), (0.8, gcol), egui::StrokeKind::Inside);
+                    let (rect, resp) =
+                        ui.allocate_exact_size(vec2(cs, cs), egui::Sense::click_and_drag());
+                    let p = ui.painter();
+                    let tl = rect.min;
+                    let w = rect.width();
+                    let h = rect.height();
+                    p.rect_filled(
+                        rect,
+                        CornerRadius::same(6u8),
+                        Color32::from_rgba_unmultiplied(0, 0, 0, 15),
+                    );
+                    p.rect_stroke(
+                        rect,
+                        CornerRadius::same(6u8),
+                        (0.8, gcol),
+                        egui::StrokeKind::Inside,
+                    );
                     for i in 0..=4 {
                         let x = tl.x + w * i as f32 / 4.0;
                         let y = tl.y + h * i as f32 / 4.0;
-                        p.line_segment([pos2(x,tl.y), pos2(x,tl.y+h)], (0.3, gcol));
-                        p.line_segment([pos2(tl.x,y), pos2(tl.x+w,y)], (0.3, gcol));
+                        p.line_segment([pos2(x, tl.y), pos2(x, tl.y + h)], (0.3, gcol));
+                        p.line_segment([pos2(tl.x, y), pos2(tl.x + w, y)], (0.3, gcol));
                     }
-                    p.line_segment([pos2(tl.x,tl.y+h), pos2(tl.x+w,tl.y)], (0.6, Color32::GRAY));
+                    p.line_segment(
+                        [pos2(tl.x, tl.y + h), pos2(tl.x + w, tl.y)],
+                        (0.6, Color32::GRAY),
+                    );
 
-                    let cp_px = |t:f32,y:f32| pos2(tl.x + t*w, tl.y + (1.0-y)*h);
+                    let cp_px = |t: f32, y: f32| pos2(tl.x + t * w, tl.y + (1.0 - y) * h);
                     let cps = [cp_px(cx[0], y0), cp_px(cx[1], y1), cp_px(cx[2], y2)];
-                    let all = [(0.0_f32, 0.0_f32), (cx[0], y0), (cx[1], y1), (cx[2], y2), (1.0, 1.0)];
-                    let curve: Vec<(f32, f32)> = (0..=200).map(|i| {
-                        let x = i as f32 / 200.0;
-                        (x, catmull_rom_curve(x, &all).clamp(0.0, 1.0))
-                    }).collect();
+                    let all = [
+                        (0.0_f32, 0.0_f32),
+                        (cx[0], y0),
+                        (cx[1], y1),
+                        (cx[2], y2),
+                        (1.0, 1.0),
+                    ];
+                    let curve: Vec<(f32, f32)> = (0..=200)
+                        .map(|i| {
+                            let x = i as f32 / 200.0;
+                            (x, catmull_rom_curve(x, &all).clamp(0.0, 1.0))
+                        })
+                        .collect();
 
                     let brt = Color32::from_rgb(255, 220, 60);
                     let drk = Color32::from_rgb(50, 90, 220);
                     for wnd in curve.windows(2) {
-                        let (x1, y1v) = wnd[0]; let (x2, y2v) = wnd[1];
+                        let (x1, y1v) = wnd[0];
+                        let (x2, y2v) = wnd[1];
                         let mid_y = (y1v + y2v) * 0.5;
                         let mid_x = (x1 + x2) * 0.5;
                         let bias = (mid_y - mid_x).clamp(-0.3, 0.3);
@@ -1701,20 +3152,33 @@ impl FilmRustPro {
                     let mut di = self.curve_drag;
                     if resp.drag_started() {
                         if let Some(mp) = resp.interact_pointer_pos() {
-                            let mut best = None; let mut bd = 30.0_f32;
+                            let mut best = None;
+                            let mut bd = 30.0_f32;
                             for (j, cp) in cps.iter().enumerate() {
                                 let d = mp.distance(*cp);
-                                if d < bd { bd = d; best = Some(j); }
+                                if d < bd {
+                                    bd = d;
+                                    best = Some(j);
+                                }
                             }
-                            di = best; self.curve_drag = di;
+                            di = best;
+                            self.curve_drag = di;
                         }
                     }
-                    if resp.drag_stopped() { di = None; self.curve_drag = None; }
+                    if resp.drag_stopped() {
+                        di = None;
+                        self.curve_drag = None;
+                    }
                     if let Some(dj) = di {
                         if let Some(mp) = resp.interact_pointer_pos() {
                             let nx = ((mp.x - tl.x) / w).clamp(0.01, 0.99);
                             let ny = (1.0 - (mp.y - tl.y) / h).clamp(0.0, 1.0);
-                            let xr = match dj { 0=>(0.02,0.40), 1=>(0.22,0.78), 2=>(0.60,0.98), _=>(0.0,1.0) };
+                            let xr = match dj {
+                                0 => (0.02, 0.40),
+                                1 => (0.22, 0.78),
+                                2 => (0.60, 0.98),
+                                _ => (0.0, 1.0),
+                            };
                             self.curve_cx[dj] = nx.clamp(xr.0, xr.1);
                             match dj {
                                 0 => *shadows = ((0.25 - ny) / 0.25).clamp(-1.0, 1.0),
@@ -1727,7 +3191,10 @@ impl FilmRustPro {
 
                     for (j, cp) in cps.iter().enumerate() {
                         let diag_y = tl.y + (1.0 - cx[j]) * h;
-                        p.line_segment([*cp, pos2(cp.x, diag_y)], (0.8, Color32::from_rgba_unmultiplied(255,255,255,30)));
+                        p.line_segment(
+                            [*cp, pos2(cp.x, diag_y)],
+                            (0.8, Color32::from_rgba_unmultiplied(255, 255, 255, 30)),
+                        );
                     }
 
                     for (j, cp) in cps.iter().enumerate() {
@@ -1735,26 +3202,42 @@ impl FilmRustPro {
                         let r = if is_d { 9.0 } else { 7.0 };
                         let cy = [y0, y1, y2][j];
                         let cpbias = (cy - cx[j]).clamp(-0.25, 0.25);
-                        let pt_col = if is_d { Color32::WHITE } else {
+                        let pt_col = if is_d {
+                            Color32::WHITE
+                        } else {
                             let t = (cpbias / 0.25).clamp(-1.0, 1.0);
                             if t >= 0.0 {
                                 Color32::from_rgb(
-                                    ((ac.r() as f32) + ((brt.r() as f32) - (ac.r() as f32)) * t) as u8,
-                                    ((ac.g() as f32) + ((brt.g() as f32) - (ac.g() as f32)) * t) as u8,
-                                    ((ac.b() as f32) + ((brt.b() as f32) - (ac.b() as f32)) * t) as u8,
+                                    ((ac.r() as f32) + ((brt.r() as f32) - (ac.r() as f32)) * t)
+                                        as u8,
+                                    ((ac.g() as f32) + ((brt.g() as f32) - (ac.g() as f32)) * t)
+                                        as u8,
+                                    ((ac.b() as f32) + ((brt.b() as f32) - (ac.b() as f32)) * t)
+                                        as u8,
                                 )
                             } else {
                                 let t = t.abs();
                                 Color32::from_rgb(
-                                    ((ac.r() as f32) + ((drk.r() as f32) - (ac.r() as f32)) * t) as u8,
-                                    ((ac.g() as f32) + ((drk.g() as f32) - (ac.g() as f32)) * t) as u8,
-                                    ((ac.b() as f32) + ((drk.b() as f32) - (ac.b() as f32)) * t) as u8,
+                                    ((ac.r() as f32) + ((drk.r() as f32) - (ac.r() as f32)) * t)
+                                        as u8,
+                                    ((ac.g() as f32) + ((drk.g() as f32) - (ac.g() as f32)) * t)
+                                        as u8,
+                                    ((ac.b() as f32) + ((drk.b() as f32) - (ac.b() as f32)) * t)
+                                        as u8,
                                 )
                             }
                         };
                         p.circle_filled(*cp, r, pt_col);
-                        if is_d { p.circle_stroke(*cp, r+1.0, (1.5, ac)); }
-                        p.text(pos2(cp.x+8.0, cp.y-8.0), egui::Align2::LEFT_TOP, ["阴影","中间调","高光"][j], egui::FontId::proportional(11.0), pt_col);
+                        if is_d {
+                            p.circle_stroke(*cp, r + 1.0, (1.5, ac));
+                        }
+                        p.text(
+                            pos2(cp.x + 8.0, cp.y - 8.0),
+                            egui::Align2::LEFT_TOP,
+                            ["阴影", "中间调", "高光"][j],
+                            egui::FontId::proportional(11.0),
+                            pt_col,
+                        );
                     }
 
                     ui.add_space(8.0);
@@ -1762,9 +3245,13 @@ impl FilmRustPro {
                     ui.add(egui::Slider::new(highlights, -1.0..=1.0).text("高光"));
                     ui.add(egui::Slider::new(shadows, -1.0..=1.0).text("阴影"));
                 }
-            } else { ui.label("请在右侧图层面板选中「曲线」层"); }
+            } else {
+                ui.label("请在右侧图层面板选中「曲线」层");
+            }
         });
-        if close { self.show_curves_overlay = false; }
+        if close {
+            self.show_curves_overlay = false;
+        }
     }
 }
 
@@ -1799,79 +3286,136 @@ impl FilmRustPro {
             });
             return;
         }
-        if self.comparison_mode && self.has_processed && self.original_tex.is_some() && self.processed_tex.is_some() {
+        if self.comparison_mode
+            && self.has_processed
+            && self.original_tex.is_some()
+            && self.processed_tex.is_some()
+        {
             self.render_comparison_view(ui);
             return;
         }
-        let tex = if self.has_processed { self.processed_tex.as_ref() } else { self.original_tex.as_ref() };
-        if let Some(tex)=tex {
+        let tex = if self.has_processed {
+            self.processed_tex.as_ref()
+        } else {
+            self.original_tex.as_ref()
+        };
+        if let Some(tex) = tex {
             let tex_id = tex.id();
-            let avail=ui.available_size(); let iw=self.display_img_w as f32; let ih=self.display_img_h as f32;
+            let avail = ui.available_size();
+            let iw = self.display_img_w as f32;
+            let ih = self.display_img_h as f32;
             let mut zoom = self.zoom;
             let mut pan = self.pan;
 
             // 自适应基座缩放：zoom=1.0 时动态适配窗口，zoom>1 时锁定比例
             let fit_s = (avail.x / iw).min(avail.y / ih).min(1.0);
-            let display_w = if zoom <= 1.01 { iw * fit_s } else { iw * fit_s * zoom };
-            let display_h = if zoom <= 1.01 { ih * fit_s } else { ih * fit_s * zoom };
+            let display_w = if zoom <= 1.01 {
+                iw * fit_s
+            } else {
+                iw * fit_s * zoom
+            };
+            let display_h = if zoom <= 1.01 {
+                ih * fit_s
+            } else {
+                ih * fit_s * zoom
+            };
             let sz = vec2(display_w, display_h);
 
             // 中键双击重置
-            let double_click = ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Middle));
-            if double_click { zoom = 1.0; pan = [0.0, 0.0]; }
+            let double_click =
+                ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Middle));
+            if double_click {
+                zoom = 1.0;
+                pan = [0.0, 0.0];
+            }
 
-            ui.vertical_centered(|ui|{
+            ui.vertical_centered(|ui| {
                 ui.add_space(8.0);
-                Frame::NONE.corner_radius(CornerRadius::same(12u8)).fill(self.bg_center()).show(ui,|ui|{
-                    let (rect, response) = ui.allocate_exact_size(sz, egui::Sense::click_and_drag());
+                Frame::NONE
+                    .corner_radius(CornerRadius::same(12u8))
+                    .fill(self.bg_center())
+                    .show(ui, |ui| {
+                        let (rect, response) =
+                            ui.allocate_exact_size(sz, egui::Sense::click_and_drag());
 
-                    // === 仅在鼠标悬停图片区域时响应滚轮缩放 ===
-                    if response.hovered() {
-                        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-                        if scroll != 0.0 {
-                            if scroll > 0.0 {
-                                // 滚轮上滚 → 放大
-                                if zoom <= 1.01 {
-                                    zoom = 1.3;  // 自适应档停靠后直接跳到 1.3x
+                        // === 仅在鼠标悬停图片区域时响应滚轮缩放 ===
+                        if response.hovered() {
+                            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+                            if scroll != 0.0 {
+                                if scroll > 0.0 {
+                                    // 滚轮上滚 → 放大
+                                    if zoom <= 1.01 {
+                                        zoom = 1.3; // 自适应档停靠后直接跳到 1.3x
+                                    } else {
+                                        zoom = (zoom * 1.15).min(4.0);
+                                    }
                                 } else {
-                                    zoom = (zoom * 1.15).min(4.0);
+                                    // 滚轮下滚 → 缩小
+                                    if zoom > 1.3 {
+                                        zoom = (zoom / 1.15).max(1.0);
+                                    } else if zoom > 1.01 {
+                                        zoom = 1.0; // 回到自适应档位停靠
+                                    }
                                 }
-                            } else {
-                                // 滚轮下滚 → 缩小
-                                if zoom > 1.3 {
-                                    zoom = (zoom / 1.15).max(1.0);
-                                } else if zoom > 1.01 {
-                                    zoom = 1.0;  // 回到自适应档位停靠
+                                if zoom <= 1.01 {
+                                    pan = [0.0, 0.0]; // 自适应时无平移
                                 }
+                                ui.ctx().request_repaint();
                             }
-                            if zoom <= 1.01 {
-                                pan = [0.0, 0.0];  // 自适应时无平移
+
+                            // 左键拖动平移（仅放大模式下，看图软件习惯）
+                            let (any_down, delta) = ui.input(|i| {
+                                (
+                                    i.pointer.button_down(egui::PointerButton::Primary),
+                                    i.pointer.delta(),
+                                )
+                            });
+                            if any_down && zoom > 1.01 {
+                                pan[0] += delta.x;
+                                pan[1] += delta.y;
                             }
-                            ui.ctx().request_repaint();
                         }
 
-                        // 左键拖动平移（仅放大模式下，看图软件习惯）
-                        let (any_down, delta) = ui.input(|i| (i.pointer.button_down(egui::PointerButton::Primary), i.pointer.delta()));
-                        if any_down && zoom > 1.01 {
-                            pan[0] += delta.x;
-                            pan[1] += delta.y;
+                        // 绘制图片
+                        let image_rect = if zoom > 1.01 {
+                            rect.translate(vec2(pan[0], pan[1]))
+                        } else {
+                            rect
+                        };
+                        ui.painter().image(
+                            tex_id,
+                            image_rect,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                        if zoom > 1.1 {
+                            ui.painter().text(
+                                egui::pos2(rect.left() + 8.0, rect.top() + 8.0),
+                                egui::Align2::LEFT_TOP,
+                                format!("{:.0}%", zoom * 100.0),
+                                egui::FontId::proportional(13.0),
+                                egui::Color32::WHITE.gamma_multiply(0.8),
+                            );
                         }
-                    }
-
-                    // 绘制图片
-                    let image_rect = if zoom > 1.01 {
-                        rect.translate(vec2(pan[0], pan[1]))
-                    } else {
-                        rect
-                    };
-                    ui.painter().image(tex_id, image_rect, egui::Rect::from_min_max(egui::pos2(0.0,0.0), egui::pos2(1.0,1.0)), egui::Color32::WHITE);
-                    if zoom > 1.1 {
-                        ui.painter().text(egui::pos2(rect.left()+8.0, rect.top()+8.0), egui::Align2::LEFT_TOP,
-                            format!("{:.0}%", zoom*100.0), egui::FontId::proportional(13.0), egui::Color32::WHITE.gamma_multiply(0.8));
-                    }
-                });
-                if self.is_processing { ui.add_space(8.0); ui.spinner(); ui.label(egui::RichText::new("显影中...").size(14.0).color(self.text_accent())); }
-                else if self.animating { let el=self.anim_start.elapsed().as_secs_f32(); let pct=((el/self.anim_duration).min(1.0)*100.0)as u32; ui.add_space(8.0); ui.add(egui::ProgressBar::new(el/self.anim_duration).desired_width(sz.x.min(400.0)).text(format!("显影中... {}%",pct))); }
+                    });
+                if self.is_processing {
+                    ui.add_space(8.0);
+                    ui.spinner();
+                    ui.label(
+                        egui::RichText::new("显影中...")
+                            .size(14.0)
+                            .color(self.text_accent()),
+                    );
+                } else if self.animating {
+                    let el = self.anim_start.elapsed().as_secs_f32();
+                    let pct = ((el / self.anim_duration).min(1.0) * 100.0) as u32;
+                    ui.add_space(8.0);
+                    ui.add(
+                        egui::ProgressBar::new(el / self.anim_duration)
+                            .desired_width(sz.x.min(400.0))
+                            .text(format!("显影中... {}%", pct)),
+                    );
+                }
             });
             self.zoom = zoom;
             self.pan = pan;
@@ -1890,44 +3434,92 @@ impl FilmRustPro {
 
         ui.vertical_centered(|ui| {
             ui.add_space(8.0);
-            Frame::NONE.corner_radius(CornerRadius::same(12u8)).fill(bg).show(ui, |ui| {
-                let (rect, response) = ui.allocate_exact_size(image_size, egui::Sense::click_and_drag());
-                let split_x = rect.min.x + rect.width() * self.split_pos;
+            Frame::NONE
+                .corner_radius(CornerRadius::same(12u8))
+                .fill(bg)
+                .show(ui, |ui| {
+                    let (rect, response) =
+                        ui.allocate_exact_size(image_size, egui::Sense::click_and_drag());
+                    let split_x = rect.min.x + rect.width() * self.split_pos;
 
-                let left_rect = egui::Rect::from_min_max(rect.min, egui::pos2(split_x, rect.max.y));
-                let p = ui.painter();
-                p.with_clip_rect(left_rect).image(tex_orig.id(), rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                    let left_rect =
+                        egui::Rect::from_min_max(rect.min, egui::pos2(split_x, rect.max.y));
+                    let p = ui.painter();
+                    p.with_clip_rect(left_rect).image(
+                        tex_orig.id(),
+                        rect,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
 
-                let right_rect = egui::Rect::from_min_max(egui::pos2(split_x, rect.min.y), rect.max);
-                p.with_clip_rect(right_rect).image(tex_proc.id(), rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                    let right_rect =
+                        egui::Rect::from_min_max(egui::pos2(split_x, rect.min.y), rect.max);
+                    p.with_clip_rect(right_rect).image(
+                        tex_proc.id(),
+                        rect,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
 
-                let label_y = rect.min.y + 16.0;
-                let label_font = egui::FontId::proportional(13.0);
-                p.text(egui::pos2(left_rect.min.x + 12.0, label_y), egui::Align2::LEFT_TOP, "原图", label_font.clone(), egui::Color32::WHITE.gamma_multiply(0.9));
-                p.text(egui::pos2(right_rect.max.x - 12.0, label_y), egui::Align2::RIGHT_TOP, "处理后", label_font, egui::Color32::WHITE.gamma_multiply(0.9));
+                    let label_y = rect.min.y + 16.0;
+                    let label_font = egui::FontId::proportional(13.0);
+                    p.text(
+                        egui::pos2(left_rect.min.x + 12.0, label_y),
+                        egui::Align2::LEFT_TOP,
+                        "原图",
+                        label_font.clone(),
+                        egui::Color32::WHITE.gamma_multiply(0.9),
+                    );
+                    p.text(
+                        egui::pos2(right_rect.max.x - 12.0, label_y),
+                        egui::Align2::RIGHT_TOP,
+                        "处理后",
+                        label_font,
+                        egui::Color32::WHITE.gamma_multiply(0.9),
+                    );
 
-                let line_full = [egui::pos2(split_x, rect.min.y), egui::pos2(split_x, rect.max.y)];
-                let line_color = egui::Color32::from_rgb(255, 255, 255);
-                p.line_segment(line_full, (2.0, line_color));
+                    let line_full = [
+                        egui::pos2(split_x, rect.min.y),
+                        egui::pos2(split_x, rect.max.y),
+                    ];
+                    let line_color = egui::Color32::from_rgb(255, 255, 255);
+                    p.line_segment(line_full, (2.0, line_color));
 
-                let handle_pos = egui::pos2(split_x, rect.center().y);
-                p.circle_filled(handle_pos, 10.0, line_color);
-                p.circle_stroke(handle_pos, 10.0, (2.0, egui::Color32::from_rgb(40, 40, 40)));
+                    let handle_pos = egui::pos2(split_x, rect.center().y);
+                    p.circle_filled(handle_pos, 10.0, line_color);
+                    p.circle_stroke(handle_pos, 10.0, (2.0, egui::Color32::from_rgb(40, 40, 40)));
 
-                let tri_color = egui::Color32::from_rgb(60, 60, 60);
-                let tri_h = 5.0; let tri_w = 4.0;
-                let ltri = [egui::pos2(handle_pos.x - 4.0, handle_pos.y), egui::pos2(handle_pos.x - 4.0 - tri_w, handle_pos.y - tri_h), egui::pos2(handle_pos.x - 4.0 - tri_w, handle_pos.y + tri_h)];
-                p.add(egui::Shape::convex_polygon(ltri.to_vec(), tri_color, egui::Stroke::NONE));
-                let rtri = [egui::pos2(handle_pos.x + 4.0, handle_pos.y), egui::pos2(handle_pos.x + 4.0 + tri_w, handle_pos.y - tri_h), egui::pos2(handle_pos.x + 4.0 + tri_w, handle_pos.y + tri_h)];
-                p.add(egui::Shape::convex_polygon(rtri.to_vec(), tri_color, egui::Stroke::NONE));
+                    let tri_color = egui::Color32::from_rgb(60, 60, 60);
+                    let tri_h = 5.0;
+                    let tri_w = 4.0;
+                    let ltri = [
+                        egui::pos2(handle_pos.x - 4.0, handle_pos.y),
+                        egui::pos2(handle_pos.x - 4.0 - tri_w, handle_pos.y - tri_h),
+                        egui::pos2(handle_pos.x - 4.0 - tri_w, handle_pos.y + tri_h),
+                    ];
+                    p.add(egui::Shape::convex_polygon(
+                        ltri.to_vec(),
+                        tri_color,
+                        egui::Stroke::NONE,
+                    ));
+                    let rtri = [
+                        egui::pos2(handle_pos.x + 4.0, handle_pos.y),
+                        egui::pos2(handle_pos.x + 4.0 + tri_w, handle_pos.y - tri_h),
+                        egui::pos2(handle_pos.x + 4.0 + tri_w, handle_pos.y + tri_h),
+                    ];
+                    p.add(egui::Shape::convex_polygon(
+                        rtri.to_vec(),
+                        tri_color,
+                        egui::Stroke::NONE,
+                    ));
 
-                if response.dragged() {
-                    if let Some(mp) = response.interact_pointer_pos() {
-                        self.split_pos = ((mp.x - rect.min.x) / rect.width()).clamp(0.03, 0.97);
-                        ui.ctx().request_repaint();
+                    if response.dragged() {
+                        if let Some(mp) = response.interact_pointer_pos() {
+                            self.split_pos = ((mp.x - rect.min.x) / rect.width()).clamp(0.03, 0.97);
+                            ui.ctx().request_repaint();
+                        }
                     }
-                }
-            });
+                });
         });
     }
 }
@@ -1943,8 +3535,12 @@ fn hsv_c32(hue: f32, sat: f32, val: f32) -> egui::Color32 {
     let q = val * (1.0 - f * sat);
     let t = val * (1.0 - (1.0 - f) * sat);
     let (r, g, b) = match h {
-        0 | 6 => (val, t, p), 1 => (q, val, p), 2 => (p, val, t),
-        3 => (p, q, val),     4 => (t, p, val), _ => (val, p, q),
+        0 | 6 => (val, t, p),
+        1 => (q, val, p),
+        2 => (p, val, t),
+        3 => (p, q, val),
+        4 => (t, p, val),
+        _ => (val, p, q),
     };
     egui::Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
 }
@@ -1954,7 +3550,8 @@ fn lerp_c32(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
     egui::Color32::from_rgba_premultiplied(
         (a.r() as f32 * (1.0 - t) + b.r() as f32 * t) as u8,
         (a.g() as f32 * (1.0 - t) + b.g() as f32 * t) as u8,
-        (a.b() as f32 * (1.0 - t) + b.b() as f32 * t) as u8, 255,
+        (a.b() as f32 * (1.0 - t) + b.b() as f32 * t) as u8,
+        255,
     )
 }
 
@@ -1962,11 +3559,15 @@ fn lerp_c32(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
 const LABEL_COL_W: f32 = 68.0;
 
 /// 绘制色彩指示条：在滑块正下方，与滑轨等长对齐
-fn paint_bar(ui: &egui::Ui, resp: &egui::Response,
-    color_fn: impl Fn(f32) -> egui::Color32, value_t: f32, show_tick: bool)
-{
+fn paint_bar(
+    ui: &egui::Ui,
+    resp: &egui::Response,
+    color_fn: impl Fn(f32) -> egui::Color32,
+    value_t: f32,
+    show_tick: bool,
+) {
     // 使用滑块响应区域作为参考，色彩条与滑块等宽对齐
-    let bar_left  = resp.rect.left();
+    let bar_left = resp.rect.left();
     let bar_right = resp.rect.right();
     let painter = ui.painter();
     let bar_y = resp.rect.bottom() + 1.0;
@@ -1975,7 +3576,9 @@ fn paint_bar(ui: &egui::Ui, resp: &egui::Response,
         egui::pos2(bar_left, bar_y),
         egui::pos2(bar_right, bar_y + bar_h),
     );
-    if bar.width() < 20.0 { return; }
+    if bar.width() < 20.0 {
+        return;
+    }
     let n = 120;
     let sw = bar.width() / n as f32;
     for i in 0..n {
@@ -1983,28 +3586,41 @@ fn paint_bar(ui: &egui::Ui, resp: &egui::Response,
             egui::Rect::from_min_size(
                 egui::pos2(bar.left() + sw * i as f32, bar.top()),
                 egui::vec2(sw + 0.5, bar.height()),
-            ), 1.0, color_fn(i as f32 / (n - 1) as f32),
+            ),
+            1.0,
+            color_fn(i as f32 / (n - 1) as f32),
         );
     }
     if show_tick {
         let tick_x = bar_left + value_t.clamp(0.0, 1.0) * bar.width();
         painter.line_segment(
-            [egui::pos2(tick_x, bar.top() - 2.0), egui::pos2(tick_x, bar.bottom() + 2.0)],
+            [
+                egui::pos2(tick_x, bar.top() - 2.0),
+                egui::pos2(tick_x, bar.bottom() + 2.0),
+            ],
             (1.5, egui::Color32::WHITE),
         );
     }
 }
 
 /// 双向滑条（蓝↔黄 / 绿↔品 / 暗↔亮）- 带动态色彩指示
-fn slr_bi(ui: &mut egui::Ui, v: &mut f32, r: std::ops::RangeInclusive<f32>,
-    label: &str, hover: &str, lc: egui::Color32, rc: egui::Color32) -> egui::Response
-{
+fn slr_bi(
+    ui: &mut egui::Ui,
+    v: &mut f32,
+    r: std::ops::RangeInclusive<f32>,
+    label: &str,
+    hover: &str,
+    lc: egui::Color32,
+    rc: egui::Color32,
+) -> egui::Response {
     let (lo, hi) = (*r.start(), *r.end());
     let t = (*v - lo) / (hi - lo);
-    let resp = ui.horizontal(|ui| {
-        ui.add_sized([LABEL_COL_W, 20.0], egui::Label::new(label));
-        ui.add(egui::Slider::new(v, r))
-    }).inner;
+    let resp = ui
+        .horizontal(|ui| {
+            ui.add_sized([LABEL_COL_W, 20.0], egui::Label::new(label));
+            ui.add(egui::Slider::new(v, r))
+        })
+        .inner;
     // 绘制动态色彩指示条（显示当前参数对应的颜色）
     paint_bar(ui, &resp, |x| lerp_c32(lc, rc, x), t, true);
     ui.add_space(9.0);
@@ -2015,51 +3631,77 @@ fn slr_bi(ui: &mut egui::Ui, v: &mut f32, r: std::ops::RangeInclusive<f32>,
 fn slr_hue(ui: &mut egui::Ui, v: &mut f32, label: &str, hover: &str) -> egui::Response {
     let current = *v;
     let t = current / 360.0;
-    let resp = ui.horizontal(|ui| {
-        ui.add_sized([LABEL_COL_W, 20.0], egui::Label::new(label));
-        ui.add(egui::Slider::new(v, 0.0..=360.0))
-    }).inner;
+    let resp = ui
+        .horizontal(|ui| {
+            ui.add_sized([LABEL_COL_W, 20.0], egui::Label::new(label));
+            ui.add(egui::Slider::new(v, 0.0..=360.0))
+        })
+        .inner;
     // 绘制动态色彩指示条（显示当前色相对应的颜色）
-    paint_bar(ui, &resp, |x| {
-        let sat = 0.10 + x * 0.90;
-        let val = 0.35 + x * 0.60;
-        hsv_c32(current, sat, val)
-    }, t, true);
+    paint_bar(
+        ui,
+        &resp,
+        |x| {
+            let sat = 0.10 + x * 0.90;
+            let val = 0.35 + x * 0.60;
+            hsv_c32(current, sat, val)
+        },
+        t,
+        true,
+    );
     ui.add_space(9.0);
     resp.on_hover_text(hover)
 }
 
 /// 饱和度滑条：灰(带一丝色相) → 饱和当前色
-fn slr_sat(ui: &mut egui::Ui, v: &mut f32, r: std::ops::RangeInclusive<f32>,
-    label: &str, suffix: &str, hover: &str, hue: f32) -> egui::Response
-{
+fn slr_sat(
+    ui: &mut egui::Ui,
+    v: &mut f32,
+    r: std::ops::RangeInclusive<f32>,
+    label: &str,
+    suffix: &str,
+    hover: &str,
+    hue: f32,
+) -> egui::Response {
     let (lo, hi) = (*r.start(), *r.end());
     let t = (*v - lo) / (hi - lo);
-    let left  = hsv_c32(hue, 0.05, 0.55);
+    let left = hsv_c32(hue, 0.05, 0.55);
     let right = hsv_c32(hue, 0.95, 0.95);
     let mut s = egui::Slider::new(v, r);
-    if !suffix.is_empty() { s = s.suffix(suffix); }
-    let resp = ui.horizontal(|ui| {
-        ui.add_sized([LABEL_COL_W, 20.0], egui::Label::new(label));
-        ui.add(s)
-    }).inner;
+    if !suffix.is_empty() {
+        s = s.suffix(suffix);
+    }
+    let resp = ui
+        .horizontal(|ui| {
+            ui.add_sized([LABEL_COL_W, 20.0], egui::Label::new(label));
+            ui.add(s)
+        })
+        .inner;
     paint_bar(ui, &resp, |x| lerp_c32(left, right, x), t, true);
     ui.add_space(9.0);
     resp.on_hover_text(hover)
 }
 
 /// 平衡双向滑条（阴影色↔高光色）
-fn slr_bal(ui: &mut egui::Ui, v: &mut f32, r: std::ops::RangeInclusive<f32>,
-    label: &str, hover: &str, shadow_hue: f32, highlight_hue: f32) -> egui::Response
-{
+fn slr_bal(
+    ui: &mut egui::Ui,
+    v: &mut f32,
+    r: std::ops::RangeInclusive<f32>,
+    label: &str,
+    hover: &str,
+    shadow_hue: f32,
+    highlight_hue: f32,
+) -> egui::Response {
     let (lo, hi) = (*r.start(), *r.end());
     let t = (*v - lo) / (hi - lo);
     let lc = hsv_c32(shadow_hue, 0.75, 0.70);
     let rc = hsv_c32(highlight_hue, 0.75, 0.70);
-    let resp = ui.horizontal(|ui| {
-        ui.add_sized([LABEL_COL_W, 20.0], egui::Label::new(label));
-        ui.add(egui::Slider::new(v, r))
-    }).inner;
+    let resp = ui
+        .horizontal(|ui| {
+            ui.add_sized([LABEL_COL_W, 20.0], egui::Label::new(label));
+            ui.add(egui::Slider::new(v, r))
+        })
+        .inner;
     paint_bar(ui, &resp, |x| lerp_c32(lc, rc, x), t, true);
     ui.add_space(9.0);
     resp.on_hover_text(hover)
@@ -2067,27 +3709,40 @@ fn slr_bal(ui: &mut egui::Ui, v: &mut f32, r: std::ops::RangeInclusive<f32>,
 
 /// 通用单向滑条（lc→rc渐变）- 带动态色彩指示
 #[allow(clippy::too_many_arguments)]
-fn slr_mono(ui: &mut egui::Ui, v: &mut f32, r: std::ops::RangeInclusive<f32>,
-    label: &str, suffix: &str, hover: &str,
-    lc: egui::Color32, rc: egui::Color32, show_tick: bool) -> egui::Response
-{
+fn slr_mono(
+    ui: &mut egui::Ui,
+    v: &mut f32,
+    r: std::ops::RangeInclusive<f32>,
+    label: &str,
+    suffix: &str,
+    hover: &str,
+    lc: egui::Color32,
+    rc: egui::Color32,
+    show_tick: bool,
+) -> egui::Response {
     let (lo, hi) = (*r.start(), *r.end());
     let t = (*v - lo) / (hi - lo);
     let mut s = egui::Slider::new(v, r);
-    if !suffix.is_empty() { s = s.suffix(suffix); }
-    let resp = ui.horizontal(|ui| {
-        ui.add_sized([LABEL_COL_W, 20.0], egui::Label::new(label));
-        ui.add(s)
-    }).inner;
+    if !suffix.is_empty() {
+        s = s.suffix(suffix);
+    }
+    let resp = ui
+        .horizontal(|ui| {
+            ui.add_sized([LABEL_COL_W, 20.0], egui::Label::new(label));
+            ui.add(s)
+        })
+        .inner;
     // 绘制动态色彩指示条（显示当前参数对应的颜色）
     paint_bar(ui, &resp, |x| lerp_c32(lc, rc, x), t, show_tick);
     ui.add_space(9.0);
     resp.on_hover_text(hover)
 }
 
-fn main()->Result<(),eframe::Error>{
+fn main() -> Result<(), eframe::Error> {
     // 注册panic钩子：崩溃时写日志到exe旁边
-    let panic_log = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("crash_log.txt")));
+    let panic_log = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("crash_log.txt")));
     if let Some(ref log_path) = panic_log {
         let p2 = log_path.clone();
         std::panic::set_hook(Box::new(move |info| {
@@ -2097,20 +3752,29 @@ fn main()->Result<(),eframe::Error>{
         }));
     }
 
-    let icon=load_app_icon();
-    eframe::run_native("FilmRust Studio Pro",
-        eframe::NativeOptions{viewport:egui::ViewportBuilder::default().with_inner_size([1200.0,800.0]).with_icon(icon),..Default::default()},
-        Box::new(|cc|{
+    let icon = load_app_icon();
+    eframe::run_native(
+        "FilmRust Studio Pro",
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([1200.0, 800.0])
+                .with_icon(icon),
+            ..Default::default()
+        },
+        Box::new(|cc| {
             // 字体加载出错不崩溃
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 setup_chinese_fonts(&cc.egui_ctx);
             }));
             Ok(Box::new(FilmRustPro::new(cc)))
-        }))
+        }),
+    )
 }
 
 fn chrono_now_str() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let d = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     format!("{}", d.as_secs())
 }
