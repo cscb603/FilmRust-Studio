@@ -14,8 +14,9 @@ pub mod error;
 pub mod layers;
 
 pub use layers::{
-    Layer, LayerStack, LayerType, BlendMode,
+    Layer, LayerStack, LayerType, BlendMode, UserPreset,
     apply_skin_hsl_standalone, apply_split_tone_standalone, apply_sharp_standalone,
+    save_user_preset, list_user_presets, delete_user_preset,
 };
 pub mod presets;
 pub mod ps_jsx;

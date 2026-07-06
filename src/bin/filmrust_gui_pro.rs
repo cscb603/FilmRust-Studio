@@ -15,7 +15,7 @@ use image::{DynamicImage, RgbImage};
 use image::codecs::jpeg::JpegEncoder;
 use rfd::FileDialog;
 
-use filmrust::layers::{BlendMode, Layer, LayerStack, LayerType, catmull_rom_curve};
+use filmrust::layers::{BlendMode, Layer, LayerStack, LayerType, UserPreset, catmull_rom_curve, save_user_preset, list_user_presets, delete_user_preset};
 use filmrust::presets::{get_all_presets, FilmPreset};
 use filmrust::{apply_film, find_filmr_stock};
 use filmr::SimulationConfig;
@@ -278,6 +278,10 @@ struct FilmRustPro {
     dirty_post: bool,             // post 层参数已修改，待合成
     last_slider_release: Option<Instant>, // 最后滑块松手时间（用于延迟更新）
     opened_folders: HashSet<PathBuf>,     // 已打开过资源管理器的文件夹（防重复弹出）
+    global_strength: f32,                 // 整体效果强度 0~100%
+    presets_dir: PathBuf,                 // 用户预设保存目录
+    user_presets: Vec<UserPreset>,        // 用户预设列表缓存
+    preset_name_input: String,            // 预设名称输入框文本
 }
 
 struct ProcessResult { ok: bool, image: Option<DynamicImage>, error: Option<String> }
@@ -330,7 +334,7 @@ impl FilmRustPro {
         layers.add(Layer::new("颗粒".into(), LayerType::Grain { amount: 0.0, size: 0.5 }));
         layers.add(Layer::new("暗角".into(), LayerType::Vignette { strength: 0.0, halation: 0.0 }));
         layers.add(Layer::new("漏光".into(), LayerType::LightLeak { intensity: 0.0, hue: 30.0, saturation: 0.8, lightness: 0.5, position: 4 }));
-        Self {
+        let mut app = Self {
             files: vec![], selected_idx: 0, last_dir: None,
             original_img: None, original_tex: None, processed_tex: None,
             display_img_w:0, display_img_h:0, is_processing:false, has_processed:false,
@@ -346,11 +350,26 @@ impl FilmRustPro {
             dirty_post: false,
             last_slider_release: None,
             opened_folders: HashSet::new(),
-        }
+            global_strength: 100.0,
+            presets_dir: {
+                let dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| PathBuf::from(".")).join("presets_user");
+                let _ = std::fs::create_dir_all(&dir);
+                dir
+            },
+            user_presets: Vec::new(),
+            preset_name_input: String::new(),
+        };
+        app.init_user_presets();
+        app
     }
 
     fn current_preset(&self) -> Option<&FilmPreset> { self.presets.get(self.style_idx) }
     fn film_base(&self) -> Option<&Layer> { self.layers.layers.iter().find(|l| matches!(l.layer_type, LayerType::FilmBase{..})) }
+
+    /// 预加载用户预设列表
+    fn init_user_presets(&mut self) {
+        self.user_presets = list_user_presets(&self.presets_dir);
+    }
 
     /// 切换到指定索引的预设，应用所有默认值（色彩/肤色/色调分离/锐化）
     fn set_preset_index(&mut self, idx: usize) {
@@ -497,7 +516,7 @@ impl FilmRustPro {
                         self.preview_cache = Some(preview_scaled.to_rgb8());
                         
                         // 合成一次后处理层，结果直接存 processed_base
-                        let comp = self.layers.composite(&rgb8, false);
+                        let comp = self.layers.composite(&rgb8, false, self.global_strength / 100.0);
                         self.processed_base = Some(comp);
                         self.anim_dst = Some(img.to_rgba8());
                         self.animating = true; self.anim_start = Instant::now();
@@ -522,7 +541,7 @@ impl FilmRustPro {
             return;
         };
         
-        let comp = self.layers.composite(base, false);
+        let comp = self.layers.composite(base, false, self.global_strength / 100.0);
         self.processed_base = Some(comp);
         self.has_processed = true;
     }
@@ -544,7 +563,7 @@ impl FilmRustPro {
         if !r.ok { self.status = format!("处理失败: {}", r.error.unwrap_or_default()); self.status_ok = false; return false; }
         let proc = r.image.unwrap();
         let rgb = proc.to_rgb8();
-        let comp = self.layers.composite(&rgb, true);
+        let comp = self.layers.composite(&rgb, true, self.global_strength / 100.0);
         let stem = path.file_stem().unwrap_or_default().to_string_lossy();
         let dir = self.last_dir.as_ref().cloned().unwrap_or_else(|| {
             path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
@@ -967,7 +986,7 @@ impl eframe::App for FilmRustPro {
                 if let Some(frame) = self.render_developing_frame(t) {
                     if t>=1.0 { self.animating = false; }
                     let rgb = DynamicImage::ImageRgba8(frame).to_rgb8();
-                    let comp = self.layers.composite(&rgb, false);
+                    let comp = self.layers.composite(&rgb, false, self.global_strength / 100.0);
                     Some(DynamicImage::ImageRgb8(comp).to_rgba8())
                 } else { None }
             } else {
@@ -1118,6 +1137,19 @@ impl FilmRustPro {
         ui.label(egui::RichText::new("叠层顺序: 色彩 → 曲线 → 基底").size(10.0).color(self.text_dim()));
         ui.add_space(2.0); ui.separator();
 
+        // ── 整体效果强度 ──
+        ui.add_space(2.0);
+        ui.horizontal(|ui|{
+            ui.label(egui::RichText::new("整体强度").size(13.0).color(self.text_accent()));
+            let resp = ui.add(egui::Slider::new(&mut self.global_strength, 0.0..=100.0).text("%").suffix("%"));
+            if resp.changed() || resp.drag_stopped() {
+                if !self.is_processing && self.has_processed {
+                    self.recomposite_from_cache();
+                }
+            }
+        });
+        ui.add_space(4.0); ui.separator();
+
         let nl = self.layers.layers.len();
         let display_order: Vec<usize> = if nl <= 1 { vec![0] } else {
             let mut order: Vec<usize> = (1..nl).collect();
@@ -1233,6 +1265,72 @@ impl FilmRustPro {
                     if ui.button(egui::RichText::new(cmp_lbl).size(14.0)).on_hover_text(if self.comparison_mode{"关闭对比模式，退出左右分割对比"}else{"打开对比模式：左=原图 右=处理后，拖拽分割线切换显示区域"}).clicked(){self.comparison_mode = !self.comparison_mode;}
                 }
             });
+        }
+
+        // ── 预设保存/加载 ──
+        ui.add_space(6.0); ui.separator();
+        ui.horizontal(|ui|{
+            ui.label(egui::RichText::new("预设").size(14.0).color(self.text_accent()));
+            if ui.small_button("↻ 刷新").on_hover_text("刷新已保存的预设列表").clicked() {
+                self.user_presets = list_user_presets(&self.presets_dir);
+            }
+        });
+        ui.horizontal(|ui|{
+            ui.add(egui::TextEdit::singleline(&mut self.preset_name_input).hint_text("预设名称").desired_width(120.0));
+            if ui.small_button("💾 保存").on_hover_text("将当前所有图层参数保存为预设文件").clicked() {
+                let name = self.preset_name_input.trim().to_string();
+                if !name.is_empty() {
+                    match save_user_preset(&name, &self.layers.layers, &self.presets_dir) {
+                        Ok(fname) => {
+                            self.status = format!("预设已保存: {}", fname);
+                            self.status_ok = true;
+                            self.user_presets = list_user_presets(&self.presets_dir);
+                            self.preset_name_input.clear();
+                        }
+                        Err(e) => {
+                            self.status = format!("保存预设失败: {}", e);
+                            self.status_ok = false;
+                        }
+                    }
+                }
+            }
+        });
+        ui.add_space(2.0);
+        if !self.user_presets.is_empty() {
+            let mut to_load: Option<Vec<Layer>> = None;
+            let mut to_del: Option<usize> = None;
+            egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
+                for (i, p) in self.user_presets.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        let nm = p.name.clone();
+                        if ui.selectable_label(false, egui::RichText::new(&nm).size(12.0)).clicked() {
+                            to_load = Some(p.layers.clone());
+                        }
+                        if ui.small_button("×").on_hover_text("删除此预设").clicked() {
+                            to_del = Some(i);
+                        }
+                    });
+                }
+            });
+            if let Some(layers) = to_load {
+                self.layers.layers = layers;
+                self.selected_layer = Some(0);
+                if !self.is_processing && self.has_processed {
+                    self.recomposite_from_cache();
+                }
+                self.status = "预设已加载".into();
+                self.status_ok = true;
+            }
+            if let Some(i) = to_del {
+                let name = self.user_presets[i].name.clone();
+                if delete_user_preset(&name, &self.presets_dir).is_ok() {
+                    self.user_presets.remove(i);
+                    self.status = format!("预设已删除: {}", name);
+                    self.status_ok = true;
+                }
+            }
+        } else {
+            ui.label(egui::RichText::new("尚无保存的预设。调好参数后输入名称点击保存").size(11.0).color(self.text_dim()));
         }
     }
 
@@ -2000,8 +2098,31 @@ fn slr_mono(ui: &mut egui::Ui, v: &mut f32, r: std::ops::RangeInclusive<f32>,
 }
 
 fn main()->Result<(),eframe::Error>{
+    // 注册panic钩子：崩溃时写日志到exe旁边
+    let panic_log = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("crash_log.txt")));
+    if let Some(ref log_path) = panic_log {
+        let p2 = log_path.clone();
+        std::panic::set_hook(Box::new(move |info| {
+            let msg = format!("[{}] PANIC: {}\n", chrono_now_str(), info);
+            let _ = std::fs::write(&p2, &msg);
+            eprintln!("{}", msg);
+        }));
+    }
+
     let icon=load_app_icon();
     eframe::run_native("FilmRust Studio Pro",
         eframe::NativeOptions{viewport:egui::ViewportBuilder::default().with_inner_size([1200.0,800.0]).with_icon(icon),..Default::default()},
-        Box::new(|cc|{setup_chinese_fonts(&cc.egui_ctx);Ok(Box::new(FilmRustPro::new(cc)))}))
+        Box::new(|cc|{
+            // 字体加载出错不崩溃
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
+                setup_chinese_fonts(&cc.egui_ctx);
+            }));
+            Ok(Box::new(FilmRustPro::new(cc)))
+        }))
+}
+
+fn chrono_now_str() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    format!("{}", d.as_secs())
 }

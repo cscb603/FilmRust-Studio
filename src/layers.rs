@@ -7,6 +7,8 @@
 //! - Sharp 仅用于最终输出，不参与实时预览
 
 use image::RgbImage;
+use serde::{Serialize, Deserialize};
+use std::path::Path;
 
 // ============================================================
 // 混合模式
@@ -589,8 +591,10 @@ impl LayerStack {
     }
 
     /// 合成所有图层到 base_img 上（f32 累加管线避免精度丢失）
-    pub fn composite(&self, base_img: &RgbImage, include_sharp: bool) -> RgbImage {
+    /// global_strength: 0.0~1.0，最终结果与原始 base_img 的混合比例
+    pub fn composite(&self, base_img: &RgbImage, include_sharp: bool, global_strength: f32) -> RgbImage {
         let (w, h) = base_img.dimensions();
+        let s = global_strength.clamp(0.0, 1.0);
 
         // f32 累加缓冲区：初始化为 base_img
         let mut acc: Vec<[f32; 3]> = base_img.pixels().map(|p| [
@@ -618,12 +622,23 @@ impl LayerStack {
             self.blend_onto_f32(&mut acc, &effect, layer.blend_mode, layer.opacity);
         }
 
-        // 最终 f32 → u8（仅一次精度丢失）
+        // 最终 f32 → u8，再与原始 base_img 按 global_strength 混合
         let mut out = RgbImage::new(w, h);
-        for (dst, src) in out.pixels_mut().zip(acc.iter()) {
-            dst[0] = (src[0].clamp(0.0, 1.0) * 255.0) as u8;
-            dst[1] = (src[1].clamp(0.0, 1.0) * 255.0) as u8;
-            dst[2] = (src[2].clamp(0.0, 1.0) * 255.0) as u8;
+        if s < 1.0 {
+            for (dst, (src, base_px)) in out.pixels_mut().zip(acc.iter().zip(base_img.pixels())) {
+                let r = (src[0].clamp(0.0, 1.0) * 255.0) as u8;
+                let g = (src[1].clamp(0.0, 1.0) * 255.0) as u8;
+                let b = (src[2].clamp(0.0, 1.0) * 255.0) as u8;
+                dst[0] = (base_px[0] as f32 * (1.0 - s) + r as f32 * s) as u8;
+                dst[1] = (base_px[1] as f32 * (1.0 - s) + g as f32 * s) as u8;
+                dst[2] = (base_px[2] as f32 * (1.0 - s) + b as f32 * s) as u8;
+            }
+        } else {
+            for (dst, src) in out.pixels_mut().zip(acc.iter()) {
+                dst[0] = (src[0].clamp(0.0, 1.0) * 255.0) as u8;
+                dst[1] = (src[1].clamp(0.0, 1.0) * 255.0) as u8;
+                dst[2] = (src[2].clamp(0.0, 1.0) * 255.0) as u8;
+            }
         }
         out
     }
@@ -1280,6 +1295,58 @@ pub fn apply_split_tone_standalone(img: &RgbImage, hh: f32, hs: f32, sh: f32, ss
 pub fn apply_sharp_standalone(img: &RgbImage, amount: f32, radius: f32) -> RgbImage {
     let stack = LayerStack::new();
     stack.apply_sharp(img, amount, radius)
+}
+
+/// 用户预设：保存/恢复所有图层参数
+/// 直接使用 Layer 的 serde 序列化
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserPreset {
+    pub name: String,
+    pub layers: Vec<Layer>,
+}
+
+/// 保存当前图层栈为用户预设
+pub fn save_user_preset(name: &str, layers: &[Layer], presets_dir: &Path) -> Result<String, String> {
+    std::fs::create_dir_all(presets_dir).map_err(|e| e.to_string())?;
+    let sanitized: String = name.chars().filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-' || *c == '_').collect();
+    let fname = format!("{}.json", sanitized.trim());
+    let path = presets_dir.join(&fname);
+    let preset = UserPreset { name: name.to_string(), layers: layers.to_vec() };
+    let json = serde_json::to_string_pretty(&preset).map_err(|e| e.to_string())?;
+    std::fs::write(&path, &json).map_err(|e| e.to_string())?;
+    Ok(fname)
+}
+
+/// 加载预设列表
+pub fn list_user_presets(presets_dir: &Path) -> Vec<UserPreset> {
+    let mut presets = Vec::new();
+    let dir = match std::fs::read_dir(presets_dir) {
+        Ok(d) => d,
+        Err(_) => return presets,
+    };
+    for entry in dir.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            if let Ok(data) = std::fs::read_to_string(&path) {
+                if let Ok(p) = serde_json::from_str::<UserPreset>(&data) {
+                    presets.push(p);
+                }
+            }
+        }
+    }
+    presets.sort_by(|a, b| a.name.cmp(&b.name));
+    presets
+}
+
+pub fn delete_user_preset(name: &str, presets_dir: &Path) -> Result<(), String> {
+    let sanitized: String = name.chars().filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-' || *c == '_').collect();
+    let fname = format!("{}.json", sanitized.trim());
+    let path = presets_dir.join(&fname);
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())
+    } else {
+        Ok(())
+    }
 }
 
 impl Default for LayerStack {

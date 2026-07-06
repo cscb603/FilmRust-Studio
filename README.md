@@ -62,7 +62,7 @@
 
 | 平台 | 文件 | 大小 |
 |------|------|------|
-| Windows | [FilmRust-Studio-Win-v7.3.0.zip](https://github.com/cscb603/FilmRust-Studio/releases) | ~17MB |
+| Windows | [FilmRust-Studio-Win-v7.3.1.zip](https://github.com/cscb603/FilmRust-Studio/releases) | ~17MB |
 | macOS (Intel/Apple Silicon) | [FilmRust_Studio_Pro_macos_v7.3.dmg](https://github.com/cscb603/FilmRust-Studio/releases) | ~XXMB |
 
 > 💡 Windows 版绿色免安装，解压即可运行。macOS 版需 macOS 12+。
