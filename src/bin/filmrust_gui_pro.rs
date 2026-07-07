@@ -318,6 +318,7 @@ struct FilmRustPro {
     files: Vec<PathBuf>,
     selected_idx: usize,
     last_dir: Option<PathBuf>,
+    full_res_img: Option<DynamicImage>,  // 全分辨率图（EXIF 已旋转 + 手动旋转），用于导出
     original_img: Option<DynamicImage>,
     original_tex: Option<egui::TextureHandle>,
     processed_tex: Option<egui::TextureHandle>,
@@ -574,6 +575,7 @@ impl FilmRustPro {
             files: vec![],
             selected_idx: 0,
             last_dir: None,
+            full_res_img: None,
             original_img: None,
             original_tex: None,
             processed_tex: None,
@@ -763,6 +765,11 @@ impl FilmRustPro {
             match Self::open_image_safe(p) {
                 Ok(img) => {
                     let (w, h) = (img.width(), img.height());
+                    
+                    // 保存全分辨率图（EXIF 已旋转）用于导出
+                    self.full_res_img = Some(img.clone());
+                    self.user_rotation = 0; // 重置手动旋转
+                    
                     // 显示用降采样（≤3600px，清晰查看）
                     let display_scale = if w.max(h) > 3600 {
                         3600.0 / w.max(h) as f32
@@ -833,6 +840,21 @@ impl FilmRustPro {
     
     /// 手动旋转图片（左转/右转），旋转后直接更新预览纹理
     fn rotate_image(&mut self, ctx: &egui::Context, degrees: i32) {
+        // 旋转全分辨率图（用于导出）
+        if let Some(img) = self.full_res_img.take() {
+            let rotated = match degrees {
+                90 => img.rotate90(),
+                -90 | 270 => img.rotate270(),
+                180 => img.rotate180(),
+                _ => {
+                    self.full_res_img = Some(img);
+                    return;
+                }
+            };
+            self.full_res_img = Some(rotated);
+        }
+        
+        // 旋转预览图（降采样版本）
         if let Some(img) = self.original_img.take() {
             let rotated = match degrees {
                 90 => img.rotate90(),
@@ -846,25 +868,14 @@ impl FilmRustPro {
             self.user_rotation = (self.user_rotation + degrees).rem_euclid(360);
             
             // 直接从旋转后的图生成纹理（不重新读文件）
-            let (w, h) = (rotated.width(), rotated.height());
-            let display_scale = if w.max(h) > 3600 {
-                3600.0 / w.max(h) as f32
-            } else {
-                1.0
-            };
-            let scaled = rotated.resize(
-                (w as f32 * display_scale) as u32,
-                (h as f32 * display_scale) as u32,
-                image::imageops::FilterType::Lanczos3,
-            );
-            let rgba = scaled.to_rgba8();
+            let rgba = rotated.to_rgba8();
             let (rw, rh) = (rgba.width(), rgba.height());
             self.original_tex = Some(ctx.load_texture(
                 "orig",
                 ColorImage::from_rgba_unmultiplied([rw as usize, rh as usize], rgba.as_raw()),
                 egui::TextureOptions::NEAREST,
             ));
-            self.original_img = Some(scaled);
+            self.original_img = Some(rotated);
             self.display_img_w = rw;
             self.display_img_h = rh;
             self.has_processed = false;
@@ -1028,12 +1039,17 @@ impl FilmRustPro {
     }
 
     fn do_export_one(&mut self, path: &Path, fmt: ExportFormat) -> bool {
-        let full = match Self::open_image_safe(path) {
-            Ok(f) => f,
-            Err(e) => {
-                self.status = format!("打开失败: {}", e);
-                self.status_ok = false;
-                return false;
+        // 优先使用内存中的全分辨率图（EXIF 已旋转 + 手动旋转），不重新读文件
+        let full = if let Some(img) = &self.full_res_img {
+            img.clone()
+        } else {
+            match Self::open_image_safe(path) {
+                Ok(f) => f,
+                Err(e) => {
+                    self.status = format!("打开失败: {}", e);
+                    self.status_ok = false;
+                    return false;
+                }
             }
         };
         let (sid, s, grain, auto_levels) = self.film_base_params();
