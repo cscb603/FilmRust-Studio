@@ -5,12 +5,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::collections::HashSet;
+use std::fs::File;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 use std::time::Instant;
 
 use eframe::egui::{self, Ui};
 use egui::{pos2, vec2, CentralPanel, Color32, ColorImage, CornerRadius, Frame, IconData, Window};
+use exif::{In, Reader, Tag};
 use image::codecs::jpeg::JpegEncoder;
 use image::{DynamicImage, RgbImage};
 use rfd::FileDialog;
@@ -355,6 +358,7 @@ struct FilmRustPro {
     presets_dir: PathBuf,                 // 用户预设保存目录
     user_presets: Vec<UserPreset>,        // 用户预设列表缓存
     preset_name_input: String,            // 预设名称输入框文本
+    user_rotation: i32,                   // 用户手动旋转角度（0/90/180/270）
 }
 
 struct ProcessResult {
@@ -619,6 +623,7 @@ impl FilmRustPro {
             },
             user_presets: Vec::new(),
             preset_name_input: String::new(),
+            user_rotation: 0,
         };
         app.init_user_presets();
         app
@@ -807,7 +812,42 @@ impl FilmRustPro {
         let reader = image::ImageReader::open(path)?;
         let mut reader = reader.with_guessed_format()?;
         reader.no_limits();
-        reader.decode()
+        let mut img = reader.decode()?;
+        
+        // 读取 EXIF 方向并自动旋转
+        if let Ok(file) = File::open(path) {
+            let mut bufreader = BufReader::new(file);
+            if let Ok(exif) = Reader::new().read_from_container(&mut bufreader) {
+                if let Some(orientation) = exif.get_field(Tag::Orientation, In::PRIMARY) {
+                    if let exif::Value::Short(ref values) = orientation.value {
+                        if let Some(&orient) = values.first() {
+                            img = apply_exif_orientation(img, orient);
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok(img)
+    }
+    
+    /// 手动旋转图片（左转/右转）
+    fn rotate_image(&mut self, degrees: i32) {
+        if let Some(img) = &self.original_img {
+            let rotated = match degrees {
+                90 => img.rotate90(),
+                -90 | 270 => img.rotate270(),
+                180 => img.rotate180(),
+                _ => return,
+            };
+            self.original_img = Some(rotated);
+            self.user_rotation = (self.user_rotation + degrees) % 360;
+            if self.user_rotation < 0 {
+                self.user_rotation += 360;
+            }
+            // 重新加载显示
+            self.has_processed = false;
+        }
     }
 
     fn do_process(
@@ -1464,6 +1504,21 @@ fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t).clamp(0.0, 255.0) as u8
 }
 
+/// 根据 EXIF 方向值旋转图片
+fn apply_exif_orientation(img: DynamicImage, orientation: u16) -> DynamicImage {
+    match orientation {
+        1 => img, // 正常
+        2 => img.fliph(), // 水平翻转
+        3 => img.rotate180(), // 旋转 180°
+        4 => img.flipv(), // 垂直翻转
+        5 => img.rotate90().fliph(), // 顺时针 90° + 水平翻转
+        6 => img.rotate270(), // 顺时针 90° (逆时针 270°)
+        7 => img.rotate90().flipv(), // 逆时针 90° + 垂直翻转
+        8 => img.rotate90(), // 逆时针 90°
+        _ => img,
+    }
+}
+
 // ============================================================
 impl eframe::App for FilmRustPro {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
@@ -1711,6 +1766,29 @@ impl FilmRustPro {
                     self.selected_idx += 1;
                     self.load_image_for_display(ui.ctx());
                 }
+            }
+        });
+        ui.add_space(4.0);
+        // 旋转按钮
+        ui.horizontal(|ui| {
+            if ui
+                .button("↺ 左转")
+                .on_hover_text("逆时针旋转 90°")
+                .clicked()
+            {
+                self.rotate_image(-90);
+                self.load_image_for_display(ui.ctx());
+            }
+            if ui
+                .button("↻ 右转")
+                .on_hover_text("顺时针旋转 90°")
+                .clicked()
+            {
+                self.rotate_image(90);
+                self.load_image_for_display(ui.ctx());
+            }
+            if self.user_rotation != 0 {
+                ui.label(format!("已旋转 {}°", self.user_rotation));
             }
         });
         ui.add_space(4.0);
