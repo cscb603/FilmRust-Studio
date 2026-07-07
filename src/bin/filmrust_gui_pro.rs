@@ -831,22 +831,47 @@ impl FilmRustPro {
         Ok(img)
     }
     
-    /// 手动旋转图片（左转/右转）
-    fn rotate_image(&mut self, degrees: i32) {
-        if let Some(img) = &self.original_img {
+    /// 手动旋转图片（左转/右转），旋转后直接更新预览纹理
+    fn rotate_image(&mut self, ctx: &egui::Context, degrees: i32) {
+        if let Some(img) = self.original_img.take() {
             let rotated = match degrees {
                 90 => img.rotate90(),
                 -90 | 270 => img.rotate270(),
                 180 => img.rotate180(),
-                _ => return,
+                _ => {
+                    self.original_img = Some(img);
+                    return;
+                }
             };
-            self.original_img = Some(rotated);
-            self.user_rotation = (self.user_rotation + degrees) % 360;
-            if self.user_rotation < 0 {
-                self.user_rotation += 360;
-            }
-            // 重新加载显示
+            self.user_rotation = (self.user_rotation + degrees).rem_euclid(360);
+            
+            // 直接从旋转后的图生成纹理（不重新读文件）
+            let (w, h) = (rotated.width(), rotated.height());
+            let display_scale = if w.max(h) > 3600 {
+                3600.0 / w.max(h) as f32
+            } else {
+                1.0
+            };
+            let scaled = rotated.resize(
+                (w as f32 * display_scale) as u32,
+                (h as f32 * display_scale) as u32,
+                image::imageops::FilterType::Lanczos3,
+            );
+            let rgba = scaled.to_rgba8();
+            let (rw, rh) = (rgba.width(), rgba.height());
+            self.original_tex = Some(ctx.load_texture(
+                "orig",
+                ColorImage::from_rgba_unmultiplied([rw as usize, rh as usize], rgba.as_raw()),
+                egui::TextureOptions::NEAREST,
+            ));
+            self.original_img = Some(scaled);
+            self.display_img_w = rw;
+            self.display_img_h = rh;
             self.has_processed = false;
+            self.processed_tex = None;
+            self.processed_base = None;
+            self.cached_filmr_base = None;
+            self.preview_cache = None;
         }
     }
 
@@ -1776,16 +1801,14 @@ impl FilmRustPro {
                 .on_hover_text("逆时针旋转 90°")
                 .clicked()
             {
-                self.rotate_image(-90);
-                self.load_image_for_display(ui.ctx());
+                self.rotate_image(ui.ctx(), -90);
             }
             if ui
                 .button("↻ 右转")
                 .on_hover_text("顺时针旋转 90°")
                 .clicked()
             {
-                self.rotate_image(90);
-                self.load_image_for_display(ui.ctx());
+                self.rotate_image(ui.ctx(), 90);
             }
             if self.user_rotation != 0 {
                 ui.label(format!("已旋转 {}°", self.user_rotation));
