@@ -41,7 +41,6 @@ egui = "0.34"
 eframe = { version = "0.34", default-features = false, features = ["default"] }
 rfd = "0.17"
 img-parts = "0.4"
-kamadak-exif = "0.5"
 
 [dev-dependencies]
 tempfile = "3.10"

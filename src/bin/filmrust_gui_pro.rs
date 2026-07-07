@@ -5,15 +5,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 use std::time::Instant;
 
 use eframe::egui::{self, Ui};
 use egui::{pos2, vec2, CentralPanel, Color32, ColorImage, CornerRadius, Frame, IconData, Window};
-use exif::{In, Reader, Tag};
 use image::codecs::jpeg::JpegEncoder;
 use image::{DynamicImage, RgbImage};
 use rfd::FileDialog;
@@ -819,22 +816,9 @@ impl FilmRustPro {
         let reader = image::ImageReader::open(path)?;
         let mut reader = reader.with_guessed_format()?;
         reader.no_limits();
-        let mut img = reader.decode()?;
+        let img = reader.decode()?;
         
-        // 读取 EXIF 方向并自动旋转
-        if let Ok(file) = File::open(path) {
-            let mut bufreader = BufReader::new(file);
-            if let Ok(exif) = Reader::new().read_from_container(&mut bufreader) {
-                if let Some(orientation) = exif.get_field(Tag::Orientation, In::PRIMARY) {
-                    if let exif::Value::Short(ref values) = orientation.value {
-                        if let Some(&orient) = values.first() {
-                            img = apply_exif_orientation(img, orient);
-                        }
-                    }
-                }
-            }
-        }
-        
+        // image crate 0.25 已自动处理 EXIF 方向，无需手动旋转
         Ok(img)
     }
     
@@ -1543,21 +1527,6 @@ enum ExportFormat {
 
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t).clamp(0.0, 255.0) as u8
-}
-
-/// 根据 EXIF 方向值旋转图片
-fn apply_exif_orientation(img: DynamicImage, orientation: u16) -> DynamicImage {
-    match orientation {
-        1 => img, // 正常
-        2 => img.fliph(), // 水平翻转
-        3 => img.rotate180(), // 旋转 180°
-        4 => img.flipv(), // 垂直翻转
-        5 => img.rotate90().fliph(), // 顺时针 90° + 水平翻转
-        6 => img.rotate270(), // 顺时针 90° (逆时针 270°)
-        7 => img.rotate90().flipv(), // 逆时针 90° + 垂直翻转
-        8 => img.rotate90(), // 逆时针 90°
-        _ => img,
-    }
 }
 
 // ============================================================
